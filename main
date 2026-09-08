@@ -1,1 +1,2007 @@
+/**
+ * Tự động nhận diện loại sheet dựa trên từ khóa
+ */
+function getSheetType(sheetName) {
+  if (!sheetName || sheetName.includes("結果")) return null; 
+  const upperName = sheetName.toUpperCase();
+  
+  if (upperName.includes("AD追加") || upperName.includes("AD新規") || upperName.includes("AD作成")) return "AD";
+  if (upperName.includes("ADG追加") || upperName.includes("ADG新規") || upperName.includes("ADG作成")) return "ADG";
+  if (upperName.includes("CPN追加") || upperName.includes("CPN新規") || upperName.includes("CPN作成")) return "CPN";
 
+  if (upperName.includes("CPN")) return "CPN";
+  if (upperName.includes("ADG")) return "ADG";
+  if (upperName.includes("AD")) return "AD"; 
+  
+  return null;
+}
+
+/**
+ * Lấy danh sách Mapping Conversion Event Name -> ID từ Sheet データ
+ */
+function getEventIdMap(ss) {
+  const dataSheet = ss.getSheetByName("データ");
+  let eventIdMap = {};
+  if (dataSheet) {
+    const maxColsData = dataSheet.getMaxColumns();
+    const maxRowsData = dataSheet.getLastRow();
+    if (maxColsData >= 7 && maxRowsData >= 11) {
+      const eventNames = dataSheet.getRange(11, 7, 1, maxColsData - 6).getDisplayValues()[0];
+      if (maxRowsData >= 12) {
+          const eventIdsMatrix = dataSheet.getRange(12, 7, maxRowsData - 11, maxColsData - 6).getDisplayValues();
+          for (let c = 0; c < eventNames.length; c++) {
+            let eName = eventNames[c].trim();
+            if (eName) {
+              for (let r = 0; r < eventIdsMatrix.length; r++) {
+                let idVal = eventIdsMatrix[r][c].trim();
+                if (idVal) {
+                  eventIdMap[eName] = idVal;
+                  break;
+                }
+              }
+            }
+          }
+      }
+    }
+  }
+  return eventIdMap;
+}
+
+/**
+ * Hiển thị bảng trạng thái và tự động đóng
+ */
+function showStatusDialog(message, isError, customHeight) {
+  const ui = SpreadsheetApp.getUi();
+  const color = isError ? "#d93025" : "#0f9d58";
+  const icon = isError ? "❌" : "✔️";
+  const timeout = isError ? 10000 : 5000;
+  const height = customHeight ? customHeight : 160;
+  
+  let htmlStr = '<div style="display:flex; flex-direction:column; align-items:center; height:100%; font-family:sans-serif; text-align:center; padding:10px 15px;">';
+  htmlStr += '  <h3 style="margin: 0 0 10px 0; color: ' + color + ';">' + icon + ' Trạng thái</h3>';
+  htmlStr += '  <div style="font-size:13px; color:#333; margin:0 0 15px 0; width: 100%;">' + message + '</div>';
+  htmlStr += '  <button onclick="google.script.host.close()" style="padding:6px 16px; background-color:#f1f3f4; color:#333; border:1px solid #dadce0; border-radius:4px; font-weight:600; cursor:pointer; font-size:13px; margin-top: auto;">Đóng</button>';
+  htmlStr += '  <script>window.onload = function() { setTimeout(function() { google.script.host.close(); }, ' + timeout + '); }</script>';
+  htmlStr += '</div>';
+  
+  const htmlOutput = HtmlService.createHtmlOutput(htmlStr).setWidth(370).setHeight(height);
+  ui.showModelessDialog(htmlOutput, 'Hệ thống');
+  
+  Utilities.sleep(3000); 
+}
+
+function getFileBase64(fileId) {
+  try {
+    var file = DriveApp.getFileById(fileId);
+    var blob = file.getBlob();
+    return Utilities.base64Encode(blob.getBytes());
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * Gán hàm này cho nút "GET DATA"
+ */
+function getData() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  const loadingHtml = HtmlService.createHtmlOutput(
+    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+    '  <h3 style="margin: 0 0 10px 0; color: #2b8a3e;">⏳ Đang trích xuất dữ liệu...</h3>' +
+    '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang sao chép, làm sạch bảng và quét Link Drive. Vui lòng đợi...</p>' +
+    '</div>'
+  ).setWidth(350).setHeight(150);
+  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+
+  const mainSheet = ss.getSheetByName("データ");
+  const config = { "CPN": 6, "ADG": 3, "AD": 7 };
+
+  const lastRowMain = mainSheet.getLastRow();
+  if (lastRowMain < 12) {
+    showStatusDialog("Không có dữ liệu ở bảng chính để xử lý.", true);
+    return; 
+  }
+  
+  // --- Lấy dữ liệu Mapping cho cột 自動発行 từ file bên ngoài ---
+  let autoIssueMap = new Map();
+  try {
+    const extSs = SpreadsheetApp.openById("1ZPqmGGnHTTMgKan4HncW4weoQAyF_7bOrL7cPU1ue2w");
+    let extSheet = null;
+    for (let s of extSs.getSheets()) {
+        if (s.getSheetId() === 193579549) {
+            extSheet = s;
+            break;
+        }
+    }
+    if (!extSheet) extSheet = extSs.getSheets()[0];
+    
+    const extData = extSheet.getDataRange().getValues();
+    for (let r = 0; r < extData.length; r++) {
+        if (extData[r].length >= 16) {
+            let colL = String(extData[r][11]).trim(); 
+            let colP = String(extData[r][15]).trim(); 
+            
+            if (colL && !autoIssueMap.has(colL)) {
+                autoIssueMap.set(colL, colP);
+            }
+        }
+    }
+  } catch (e) {
+  }
+  // ----------------------------------------------------------------
+  
+  const richTextValues = mainSheet.getRange(12, 2, lastRowMain - 11, 1).getRichTextValues();
+  const mainValues = mainSheet.getRange(12, 2, lastRowMain - 11, 2).getValues(); 
+  
+  const outputCounts = []; 
+  const accountNamesOutput = []; 
+  const autoIssueOutput = []; 
+  const allFileTasks = []; 
+  let hasProcessError = false;
+  let driveErrors = []; 
+  let globalConvEvents = new Set(); 
+
+  const mimeToExt = {
+    'image/jpeg': '.jpg', 'image/png': '.png', 'image/gif': '.gif', 'image/webp': '.webp',
+    'video/mp4': '.mp4', 'video/quicktime': '.mov', 'video/x-msvideo': '.avi', 'video/x-matroska': '.mkv'
+  };
+
+  for (let i = 0; i < mainValues.length; i++) {
+    let url = richTextValues[i][0].getLinkUrl();
+    if (!url) url = String(mainValues[i][0]).trim();
+    
+    const sheetName = String(mainValues[i][1]).trim();
+    const cleanSheetName = sheetName.replace(/\s+/g, '');
+    const sheetType = getSheetType(cleanSheetName); 
+
+    let accNameForThisRow = ""; 
+    let autoIssueForThisRow = "未設定";
+
+    if (url && sheetType !== null) {
+      try {
+        const targetSs = SpreadsheetApp.openByUrl(url);
+
+        try {
+          for (let s of targetSs.getSheets()) {
+            if (getSheetType(s.getName()) === "CPN") {
+              const cpnData = s.getDataRange().getValues();
+              let hRow = -1;
+              for (let r = 0; r < Math.min(20, cpnData.length); r++) {
+                 if (cpnData[r] && cpnData[r].join("").toLowerCase().includes("campaign")) {
+                    hRow = r; break;
+                 }
+              }
+              if (hRow !== -1) {
+                 const cpnHeaders = cpnData[hRow].map(h => String(h).replace(/[\s\u200B-\u200D\uFEFF]/g, ''));
+                 const accColIdx = cpnHeaders.findIndex(h => h.includes("領域名/事業部名") || h.includes("請求先"));
+                 if (accColIdx !== -1 && cpnData.length > hRow + 1) {
+                     let cpIdx = cpnHeaders.indexOf("campaign_name");
+                     if (cpIdx === -1) cpIdx = cpnHeaders.findIndex(h => h.toLowerCase().includes("campaign"));
+                     if (cpIdx === -1) cpIdx = 0;
+
+                     for (let r = hRow + 1; r < cpnData.length; r++) {
+                         let cpVal = String(cpnData[r][cpIdx]).trim();
+                         if (cpVal.toLowerCase().includes("required") || cpVal.includes("必須")) continue;
+                         let val = String(cpnData[r][accColIdx]).trim();
+                         if (val) {
+                             accNameForThisRow = val;
+                             break;
+                         }
+                     }
+                 }
+              }
+              break;
+            }
+          }
+        } catch(e) {}
+
+        if (accNameForThisRow !== "") {
+            if (autoIssueMap.has(accNameForThisRow)) {
+                let valP = autoIssueMap.get(accNameForThisRow);
+                if (valP !== "") autoIssueForThisRow = valP;
+            }
+        }
+
+        let remoteSheet = null;
+        
+        for (let s of targetSs.getSheets()) {
+          if (getSheetType(s.getName()) === sheetType) {
+            remoteSheet = s; 
+            break;
+          }
+        }
+
+        if (remoteSheet) {
+          const allLocalSheets = ss.getSheets();
+          for (let ls of allLocalSheets) {
+            if (getSheetType(ls.getName()) === sheetType && !ls.getName().includes("結果")) {
+              ss.deleteSheet(ls); 
+              break;
+            }
+          }
+
+          let localSheet = remoteSheet.copyTo(ss);
+          localSheet.setName(sheetType); 
+
+          const maxRows = localSheet.getMaxRows();
+          let colIndex = (sheetType && config[sheetType]) ? config[sheetType] - 1 : -1;
+          
+          let uniqueSet = new Set();
+          let validStart = -1;
+          let validEnd = -1;
+
+          if (maxRows > 2) {
+            const data = localSheet.getDataRange().getValues();
+            
+            let headerRowIdx = -1; 
+            for (let h = 0; h < 20; h++) {
+                if (data[h]) {
+                    let rowStr = data[h].join("").toLowerCase();
+                    if (rowStr.includes("campaign") || rowStr.includes("adgroup") || rowStr.includes("ad_name")) {
+                        headerRowIdx = h;
+                        break;
+                    }
+                }
+            }
+
+            if (headerRowIdx !== -1) {
+              const dataHeaders = data[headerRowIdx].map(h => String(h).replace(/[\s\u200B-\u200D\uFEFF]/g, '').toLowerCase());
+              
+              let cpIdx = dataHeaders.indexOf("campaign_name");
+              if (cpIdx === -1) cpIdx = dataHeaders.findIndex(h => h.includes("campaign"));
+              
+              let adgIdx = dataHeaders.indexOf("adgroup_name");
+              if (adgIdx === -1) adgIdx = dataHeaders.findIndex(h => h.includes("adgroup") || h.includes("ad_group"));
+              
+              let adIdx = dataHeaders.indexOf("ad_name");
+              if (adIdx === -1) adIdx = dataHeaders.findIndex(h => h.includes("ad_name") || h === "title");
+
+              let titleIdx = dataHeaders.indexOf("title");
+              let copyIdx = dataHeaders.indexOf("copy");
+              let linkIdx = dataHeaders.indexOf("link");
+
+              let imgIdx = dataHeaders.indexOf("image_name_1");
+              if (imgIdx === -1) imgIdx = dataHeaders.indexOf("image_name");
+              if (imgIdx === -1) imgIdx = dataHeaders.indexOf("image_link");
+              if (imgIdx === -1) imgIdx = dataHeaders.indexOf("格納フォルダ");
+              if (imgIdx === -1) imgIdx = dataHeaders.findIndex(h => h.includes("image"));
+              
+              let convIdx = dataHeaders.indexOf("conversionsevent");
+              if (convIdx === -1) convIdx = dataHeaders.findIndex(h => h.includes("conversion") || h.includes("コンバージョン"));
+
+              for (let r = headerRowIdx + 1; r < data.length; r++) { 
+                 let valCp = cpIdx !== -1 && cpIdx < data[r].length ? String(data[r][cpIdx]).trim() : "";
+                 let valAdg = adgIdx !== -1 && adgIdx < data[r].length ? String(data[r][adgIdx]).trim() : "";
+                 let valAd = adIdx !== -1 && adIdx < data[r].length ? String(data[r][adIdx]).trim() : "";
+                 let valImg = imgIdx !== -1 && imgIdx < data[r].length ? String(data[r][imgIdx]).trim() : ""; 
+
+                 let valTitle = titleIdx !== -1 && titleIdx < data[r].length ? String(data[r][titleIdx]).trim() : "";
+                 let valCopy = copyIdx !== -1 && copyIdx < data[r].length ? String(data[r][copyIdx]).trim() : "";
+                 let valLink = linkIdx !== -1 && linkIdx < data[r].length ? String(data[r][linkIdx]).trim() : "";
+
+                 let isInstructionRow = false;
+                 let rawRowStr = data[r].join("").toLowerCase();
+                 if (rawRowStr.includes("required") || rawRowStr.includes("必須") || rawRowStr.includes("recommended")) {
+                     if (!rawRowStr.includes("http")) { 
+                         isInstructionRow = true;
+                     }
+                 }
+                 if (valCp.toLowerCase().includes("required") || valCp.includes("必須")) {
+                     isInstructionRow = true;
+                 }
+
+                 let isValidRow = false;
+                 if (!isInstructionRow) {
+                     if (sheetType === "CPN") isValidRow = (valCp !== ""); 
+                     else if (sheetType === "ADG") isValidRow = (valCp !== "" && valAdg !== ""); 
+                     else if (sheetType === "AD") isValidRow = (valCp !== "" || valAdg !== "" || valAd !== ""); 
+                 }
+
+                 if (isValidRow) {
+                    if (validStart === -1) validStart = r + 1; 
+                    validEnd = r + 1; 
+                    
+                    if (sheetType === "CPN") {
+                        uniqueSet.add(valCp);
+                        
+                        if (convIdx !== -1 && convIdx < data[r].length) {
+                            let convVal = String(data[r][convIdx]).trim();
+                            if (convVal !== "") {
+                                let evSplit = convVal.split(/[,;\n|]/);
+                                evSplit.forEach(e => {
+                                    let cleanE = e.trim();
+                                    if(cleanE !== "") globalConvEvents.add(cleanE);
+                                });
+                            }
+                        }
+                    } else if (sheetType === "ADG") {
+                        uniqueSet.add(valCp + "■" + valAdg);
+                    } else if (sheetType === "AD") {
+                        let effectiveAdKey = valAd + "■" + valTitle + "■" + valCopy + "■" + valLink;
+                        let compositeKey = (valCp + "■" + valAdg + "■" + valImg + "■" + effectiveAdKey).trim();
+                        if (compositeKey !== "■■■") {
+                            uniqueSet.add(compositeKey);
+                        }
+                    }
+                 }
+              }
+
+              const H_sheet = headerRowIdx + 1; 
+              
+              if (validStart !== -1) {
+                  if (maxRows > validEnd) {
+                     localSheet.getRange(validEnd + 1, 1, maxRows - validEnd, localSheet.getMaxColumns()).clear();
+                  }
+                  if (validStart > H_sheet + 1) {
+                     localSheet.deleteRows(H_sheet + 1, validStart - H_sheet - 1);
+                  }
+              }
+
+              if (H_sheet > 1) {
+                 localSheet.deleteRows(1, H_sheet - 1);
+              }
+
+              if (validStart !== -1) {
+                 if (colIndex !== -1) outputCounts.push([uniqueSet.size]);
+                 else outputCounts.push(["Đã lấy dữ liệu"]);
+              } else {
+                 if (colIndex !== -1) outputCounts.push([0]);
+                 else outputCounts.push(["Không có dữ liệu"]);
+              }
+
+              if (sheetType === "AD" && validStart !== -1) {
+                 const finalData = localSheet.getDataRange().getValues(); 
+                 const rawHeaders = finalData[0].map(h => String(h).trim());
+                 const headersNorm = rawHeaders.map(h => h.toLowerCase().replace(/[\s\u200B-\u200D\uFEFF]/g, ''));
+                 
+                 let folderColIdx = rawHeaders.indexOf("格納フォルダ"); 
+                 let imgColIdx = headersNorm.indexOf("image_name");
+                 if (imgColIdx === -1) imgColIdx = headersNorm.indexOf("image_link");
+                 if (imgColIdx === -1) imgColIdx = headersNorm.findIndex(h => h.includes("image"));
+                 
+                 let linkColIdx = folderColIdx !== -1 ? folderColIdx : imgColIdx;
+                 let cpColIdx = headersNorm.indexOf("campaign_name");
+                 if (cpColIdx === -1) cpColIdx = headersNorm.findIndex(h => h.includes("campaign"));
+                 let adgColIdx = headersNorm.indexOf("adgroup_name");
+                 if (adgColIdx === -1) adgColIdx = headersNorm.findIndex(h => h.includes("adgroup") || h.includes("ad_group"));
+
+                 if (linkColIdx !== -1) {
+                    let urlGroups = {}; 
+                    let directNames = {}; 
+                    
+                    for (let r = 1; r < finalData.length; r++) {
+                       let driveUrl = String(finalData[r][linkColIdx]).trim();
+                       if (driveUrl) {
+                          if (driveUrl.startsWith("http") || driveUrl.includes("drive.google")) {
+                              if (!urlGroups[driveUrl]) urlGroups[driveUrl] = [];
+                              urlGroups[driveUrl].push(r);
+                          } else {
+                              directNames[r] = driveUrl;
+                          }
+                       }
+                    }
+
+                    let urlMode = {};
+                    for (let driveUrl in urlGroups) {
+                       let rows = urlGroups[driveUrl];
+                       let fetchedFiles = [];
+                       
+                       let idMatch = driveUrl.match(/[-\w]{25,}/);
+                       if (idMatch) {
+                          try {
+                              let id = idMatch[0];
+                              let isFolder = (driveUrl.indexOf('/folders/') !== -1 || driveUrl.indexOf('folderview') !== -1);
+                              let filesToProcess = [];
+                              if (isFolder) {
+                                 let folder = DriveApp.getFolderById(id);
+                                 let files = folder.getFiles();
+                                 while (files.hasNext()) filesToProcess.push(files.next());
+                              } else {
+                                 filesToProcess.push(DriveApp.getFileById(id));
+                              }
+
+                              for (let f of filesToProcess) {
+                                 let file = f;
+                                 try {
+                                    if (file.getMimeType() === 'application/vnd.google-apps.shortcut') {
+                                       let targetId = file.getTargetId();
+                                       if (targetId) file = DriveApp.getFileById(targetId);
+                                    }
+                                 } catch (e) {
+                                     driveErrors.push(driveUrl + " (Lỗi truy cập Shortcut con)");
+                                 }
+
+                                 let mimeType = file.getMimeType();
+                                 let originalName = file.getName() || "File_Khong_Ten";
+                                 originalName = originalName.trim().replace(/\s+\./g, '.').normalize('NFC');
+                                 let hasExt = originalName.toLowerCase().match(/\.(jpg|jpeg|png|gif|webp|mp4|mov|avi|mkv)$/i);
+                                 let isMedia = mimeType.indexOf('image/') !== -1 || mimeType.indexOf('video/') !== -1 || hasExt;
+
+                                 if (isMedia) {
+                                    if (!hasExt && mimeToExt[mimeType]) originalName += mimeToExt[mimeType]; 
+                                    fetchedFiles.push({ id: file.getId(), name: originalName });
+                                 }
+                              }
+                          } catch (e) {
+                              driveErrors.push(driveUrl);
+                          }
+                       }
+
+                       if (fetchedFiles.length === rows.length && fetchedFiles.length > 0) {
+                          let matchCount = 0;
+                          let matchMap = {};
+                          let availableFiles = [...fetchedFiles];
+
+                          for (let rIdx of rows) {
+                             let adgName = adgColIdx !== -1 ? String(finalData[rIdx][adgColIdx]).trim() : "";
+                             let imgNameCell = imgColIdx !== -1 ? String(finalData[rIdx][imgColIdx]).trim().normalize('NFC') : "";
+                             let targetMatchName = imgNameCell ? imgNameCell : adgName;
+
+                             let foundIdx = availableFiles.findIndex(f => {
+                                let baseName = f.name.substring(0, f.name.lastIndexOf('.')) || f.name;
+                                return baseName === targetMatchName || baseName.includes(targetMatchName) || targetMatchName.includes(baseName);
+                             });
+
+                             if (foundIdx !== -1) {
+                                matchMap[rIdx] = availableFiles[foundIdx];
+                                availableFiles.splice(foundIdx, 1);
+                                matchCount++;
+                             }
+                          }
+                          
+                          if (matchCount === rows.length) {
+                             urlMode[driveUrl] = { mode: "1-to-1", files: fetchedFiles, matchMap: matchMap };
+                          } else {
+                             urlMode[driveUrl] = { mode: "all", files: fetchedFiles };
+                          }
+                       } else {
+                          urlMode[driveUrl] = { mode: "all", files: fetchedFiles };
+                       }
+                    }
+
+                    // ====== UPDATE LOGIC: TẠO MA TRẬN CHO AD NAME MỚI =======
+                    let maxImages = 0;
+                    const tempRowsData = [];
+                    let globalCRCounter = 0;
+                    let urlCRMap = {}; 
+
+                    for (let r = 1; r < finalData.length; r++) { 
+                       let driveUrl = String(finalData[r][linkColIdx]).trim();
+                       
+                       let names = [];
+                       let fileNameVal = "";
+
+                       if (directNames[r]) {
+                           names.push(directNames[r]);
+                           if (!urlCRMap[directNames[r]]) {
+                               globalCRCounter++;
+                               urlCRMap[directNames[r]] = "CR" + globalCRCounter;
+                           }
+                           fileNameVal = urlCRMap[directNames[r]];
+                       }
+                       else if (driveUrl && urlMode[driveUrl]) {
+                           if (!urlCRMap[driveUrl]) {
+                               globalCRCounter++;
+                               urlCRMap[driveUrl] = "CR" + globalCRCounter;
+                           }
+                           fileNameVal = urlCRMap[driveUrl];
+
+                           let modeData = urlMode[driveUrl];
+                           if (modeData.mode === "1-to-1") {
+                              let matchedFile = modeData.matchMap[r];
+                              if (matchedFile) {
+                                  names.push(matchedFile.name);
+                                  let exists = allFileTasks.find(t => t.id === matchedFile.id && t.folder === fileNameVal);
+                                  if (!exists) {
+                                     allFileTasks.push({ id: matchedFile.id, name: matchedFile.name, folder: fileNameVal });
+                                  }
+                              }
+                           } else {
+                              for (let f of modeData.files) {
+                                 names.push(f.name);
+                                 let exists = allFileTasks.find(t => t.id === f.id && t.folder === fileNameVal);
+                                 if (!exists) {
+                                    allFileTasks.push({ id: f.id, name: f.name, folder: fileNameVal });
+                                 }
+                              }
+                           }
+                       }
+                       
+                       let unitImageVal = names.length > 0 ? names.length : ""; 
+                       if (names.length > maxImages) maxImages = names.length;
+
+                       tempRowsData.push({
+                           fileNameVal: fileNameVal,
+                           unitImageVal: unitImageVal,
+                           names: names
+                       });
+                    }
+
+                    if (tempRowsData.length > 0) {
+                       const startCol = rawHeaders.length + 1;
+                       const timeZone = ss.getSpreadsheetTimeZone();
+                       const yymmddDateString = Utilities.formatDate(new Date(), timeZone, "yyMMdd");
+
+                       let adNameColIdx = headersNorm.indexOf("ad_name");
+                       if (adNameColIdx === -1) adNameColIdx = headersNorm.findIndex(h => h.includes("ad_name") || h === "title");
+
+                       let maxImagesOr1 = Math.max(maxImages, 1);
+                       const newHeaders = ["file_name", "unit_image", "image_name_1", "入稿用_ad_name"];
+                       for (let k = 2; k <= maxImagesOr1; k++) {
+                           newHeaders.push("image_name_" + k);
+                       }
+                       const totalNewCols = newHeaders.length;
+
+                       if (localSheet.getMaxColumns() < startCol + totalNewCols - 1) {
+                          localSheet.insertColumnsAfter(localSheet.getMaxColumns(), (startCol + totalNewCols - 1) - localSheet.getMaxColumns());
+                       }
+
+                       localSheet.getRange(1, startCol, 1, totalNewCols).setValues([newHeaders]).setFontWeight("bold");
+                       localSheet.getRange(1, startCol).setBackground("#d9ead3");
+                       localSheet.getRange(1, startCol + 1).setBackground("#fff2cc");
+                       localSheet.getRange(1, startCol + 2).setBackground("#cfe2f3");
+                       localSheet.getRange(1, startCol + 3).setBackground("#ead1dc"); 
+                       if (maxImagesOr1 > 1) {
+                           localSheet.getRange(1, startCol + 4, 1, maxImagesOr1 - 1).setBackground("#cfe2f3");
+                       }
+
+                       const pasteMatrix = [];
+                       for (let i = 0; i < tempRowsData.length; i++) {
+                           let r = i + 1; 
+                           let item = tempRowsData[i];
+                           
+                           // Kiểm tra nếu dòng hoàn toàn trống thì bỏ qua (không điền data)
+                           let isEmptyRow = finalData[r].every(cell => String(cell).trim() === "");
+                           if (isEmptyRow) {
+                               pasteMatrix.push(new Array(totalNewCols).fill(""));
+                               continue;
+                           }
+
+                           let img1 = item.names.length > 0 ? item.names[0] : "";
+                           let currentAdName = adNameColIdx !== -1 ? String(finalData[r][adNameColIdx]).trim().normalize('NFC') : "";
+                           let finalAdName = currentAdName === "" ? (yymmddDateString + "■" + img1) : (yymmddDateString + "■" + img1 + "■" + currentAdName);
+
+                           let rowArr = [item.fileNameVal, item.unitImageVal, img1, finalAdName];
+                           for (let k = 1; k < maxImagesOr1; k++) {
+                               rowArr.push(item.names.length > k ? item.names[k] : "");
+                           }
+                           pasteMatrix.push(rowArr);
+                       }
+                       
+                       localSheet.getRange(2, startCol, pasteMatrix.length, totalNewCols).setValues(pasteMatrix);
+                    }
+                 }
+              }
+            } else {
+               outputCounts.push(["Lỗi: Không tìm thấy Header"]);
+            }
+          } else {
+             outputCounts.push([0]);
+          }
+          SpreadsheetApp.flush(); 
+        } else {
+          outputCounts.push(["Lỗi: File gốc không chứa sheet này"]);
+          hasProcessError = true;
+        }
+      } catch (e) {
+        outputCounts.push(["Lỗi: " + e.message]);
+        hasProcessError = true;
+      }
+    } else {
+      outputCounts.push([""]); 
+    }
+
+    accountNamesOutput.push([accNameForThisRow]);
+    autoIssueOutput.push([autoIssueForThisRow]);
+  }
+
+  if (accountNamesOutput.length > 0) {
+    mainSheet.getRange(12, 4, accountNamesOutput.length, 1).setValues(accountNamesOutput);
+  }
+  if (autoIssueOutput.length > 0) {
+    mainSheet.getRange(12, 5, autoIssueOutput.length, 1).setValues(autoIssueOutput);
+  }
+  if (outputCounts.length > 0) {
+    mainSheet.getRange(12, 6, outputCounts.length, 1).setValues(outputCounts);
+  }
+  
+  let maxCols = mainSheet.getMaxColumns();
+  if (maxCols >= 7) {
+      mainSheet.getRange(11, 7, 1, maxCols - 6).clearContent().setBackground(null);
+  }
+  
+  let eventArr = Array.from(globalConvEvents);
+  if (eventArr.length > 0) {
+      if (maxCols < 6 + eventArr.length) {
+          mainSheet.insertColumnsAfter(maxCols, (6 + eventArr.length) - maxCols);
+      }
+      let targetRange = mainSheet.getRange(11, 7, 1, eventArr.length);
+      targetRange.setValues([eventArr]);
+      targetRange.setBackground("#ea9999");
+      targetRange.setFontWeight("bold");
+  }
+
+  if (driveErrors.length > 0) {
+      let uniqueErrors = [...new Set(driveErrors)];
+      let msg = "Phát hiện " + uniqueErrors.length + " link Drive bị từ chối quyền truy cập (hoặc link hỏng).\nHệ thống đã tự động bỏ qua việc tải ảnh đối với các link này:\n\n";
+      for (let k = 0; k < Math.min(uniqueErrors.length, 8); k++) {
+          msg += "- " + uniqueErrors[k] + "\n";
+      }
+      if (uniqueErrors.length > 8) {
+          msg += "... và " + (uniqueErrors.length - 8) + " link khác.\n";
+      }
+      msg += "\n👉 Vui lòng SHARE quyền xem (Viewer) cho thư mục/file đó rồi bấm lại nút GET DATA nhé!";
+      ui.alert("⚠️ CẢNH BÁO QUYỀN TRUY CẬP DRIVE", msg, ui.ButtonSet.OK);
+  }
+
+  if (allFileTasks.length > 0) {
+    var htmlTemplate = HtmlService.createTemplateFromFile('Index');
+    htmlTemplate.fileTasksJson = JSON.stringify(allFileTasks);
+    htmlTemplate.zipFileName = "Export_Image.zip";
+    htmlTemplate.warningMsg = ""; 
+    var htmlOutput = htmlTemplate.evaluate().setWidth(450).setHeight(360);
+    ui.showModelessDialog(htmlOutput, 'Tải Ảnh Dạng ZIP');
+  } else {
+    if (driveErrors.length > 0) {
+       showStatusDialog("Có lỗi xảy ra: Không thể tải xuống hình ảnh do thiếu quyền truy cập Drive.", true, 200);
+    } else if (hasProcessError) {
+       showStatusDialog("Hoàn thành! Nhưng có lỗi kết nối (Xem cột F).", true);
+    } else {
+       showStatusDialog("Hoàn thành trích xuất dữ liệu!", false);
+    }
+  }
+}
+
+/**
+ * Gán hàm này cho nút "DELETE"
+ */
+function deleteData() {
+  const ui = SpreadsheetApp.getUi();
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  
+  const loadingHtml = HtmlService.createHtmlOutput(
+    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+    '  <h3 style="margin: 0 0 10px 0; color: #c92a2a;">🗑️ Đang dọn dẹp hệ thống...</h3>' +
+    '</div>'
+  ).setWidth(350).setHeight(100);
+  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  
+  const mainSheet = ss.getSheetByName("データ");
+  if (mainSheet) {
+    const maxRows = mainSheet.getMaxRows();
+    if (maxRows >= 12) {
+      mainSheet.getRange(12, 2, maxRows - 11, 1).clearContent(); 
+      mainSheet.getRange(12, 4, maxRows - 11, 1).clearContent(); 
+      mainSheet.getRange(12, 5, maxRows - 11, 1).clearContent(); 
+      mainSheet.getRange(12, 6, maxRows - 11, 1).clearContent(); 
+    }
+    
+    const maxCols = mainSheet.getMaxColumns();
+    if (maxCols >= 7) {
+        mainSheet.getRange(11, 7, Math.max(1, maxRows - 10), maxCols - 6).clearContent().setBackground(null);
+    }
+  }
+
+  let currentSheets = ss.getSheets(); 
+  for (let s of currentSheets) {
+     let sName = s.getName();
+     if (sName === "データ") continue;
+
+     if (sName.includes("既存")) {
+         let maxRows = s.getMaxRows();
+         let maxCols = s.getMaxColumns();
+         if (maxRows >= 5) {
+             s.getRange(5, 1, maxRows - 4, maxCols).clearContent();
+         }
+         continue;
+     }
+     
+     if (getSheetType(sName) !== null || sName.includes("結果【")) {
+         ss.deleteSheet(s);
+     }
+  }
+  
+  showStatusDialog("Đã dọn dẹp sạch toàn bộ dữ liệu!", false);
+}
+
+/**
+ * Gán hàm này cho nút "バルク作成"
+ */
+function createBulkFiles() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+
+  // ==========================================
+  // KIỂM TRA TRÙNG LẶP VỚI SHEET 既存
+  // ==========================================
+  let kizonSheet = ss.getSheetByName("既存");
+  if (kizonSheet) {
+      let kData = kizonSheet.getDataRange().getValues();
+      let cpnIdCol = -1, cpnNameCol = -1;
+      let adgCpnIdCol = -1, adgNameCol = -1;
+      
+      for (let r = 0; r < Math.min(10, kData.length); r++) {
+          for (let c = 0; c < kData[r].length; c++) {
+              let val = String(kData[r][c]).trim().toLowerCase();
+              if (val === "campaign_id" && c < 10) cpnIdCol = c;
+              if (val === "campaign_name" && c < 10) cpnNameCol = c;
+              
+              if (val === "campaign_id" && c >= 10) adgCpnIdCol = c;
+              if (val === "adgroup_name" || val === "ad_group_name") {
+                  if (c >= 10) adgNameCol = c;
+              }
+          }
+      }
+
+      let existingCampaignNames = new Set();
+      let kizonCpnMap = new Map(); 
+      let existingAdgKeys = new Set();
+
+      if (cpnIdCol !== -1 && cpnNameCol !== -1) {
+          for (let r = 0; r < kData.length; r++) {
+              let cId = String(kData[r][cpnIdCol]).trim();
+              let cName = String(kData[r][cpnNameCol]).trim();
+              if (cId && cName && cId.toLowerCase() !== "campaign_id") {
+                  kizonCpnMap.set(cId, cName);
+                  existingCampaignNames.add(cName);
+              }
+          }
+      }
+
+      if (adgCpnIdCol !== -1 && adgNameCol !== -1) {
+          for (let r = 0; r < kData.length; r++) {
+              let aCpnId = String(kData[r][adgCpnIdCol]).trim();
+              let aName = String(kData[r][adgNameCol]).trim();
+              if (aCpnId && aName && aCpnId.toLowerCase() !== "campaign_id") {
+                  let mappedCpnName = kizonCpnMap.get(aCpnId) || "";
+                  if (mappedCpnName) {
+                      existingAdgKeys.add(mappedCpnName + "■" + aName);
+                  }
+              }
+          }
+      }
+
+      let duplicateWarnings = [];
+      let cpnSheetName = null;
+      let adgSheetName = null;
+      
+      for (let s of ss.getSheets()) {
+          if (getSheetType(s.getName()) === "CPN") cpnSheetName = s.getName();
+          if (getSheetType(s.getName()) === "ADG") adgSheetName = s.getName();
+      }
+
+      if (cpnSheetName) {
+          let cpnSheet = ss.getSheetByName(cpnSheetName);
+          let cpnData = cpnSheet.getDataRange().getValues();
+          if (cpnData.length > 1) {
+              let headers = cpnData[0].map(h => String(h).trim().toLowerCase());
+              let cCol = headers.indexOf("campaign_name");
+              if (cCol === -1) cCol = headers.findIndex(h => h.includes("campaign"));
+              
+              if (cCol !== -1) {
+                  for (let i = 1; i < cpnData.length; i++) {
+                      let cName = String(cpnData[i][cCol]).trim();
+                      if (cName && existingCampaignNames.has(cName)) {
+                          duplicateWarnings.push("CPN trùng: " + cName);
+                      }
+                  }
+              }
+          }
+      }
+
+      if (adgSheetName) {
+          let adgSheet = ss.getSheetByName(adgSheetName);
+          let adgData = adgSheet.getDataRange().getValues();
+          if (adgData.length > 1) {
+              let headers = adgData[0].map(h => String(h).trim().toLowerCase());
+              let cCol = headers.indexOf("campaign_name");
+              if (cCol === -1) cCol = headers.findIndex(h => h.includes("campaign"));
+              let aCol = headers.indexOf("adgroup_name");
+              if (aCol === -1) aCol = headers.findIndex(h => h.includes("adgroup") || h.includes("ad_group"));
+              
+              if (cCol !== -1 && aCol !== -1) {
+                  for (let i = 1; i < adgData.length; i++) {
+                      let cName = String(adgData[i][cCol]).trim();
+                      let aName = String(adgData[i][aCol]).trim();
+                      if (cName && aName) {
+                          let key = cName + "■" + aName;
+                          if (existingAdgKeys.has(key)) {
+                              duplicateWarnings.push("ADG trùng: " + cName + " -> " + aName);
+                          }
+                      }
+                  }
+              }
+          }
+      }
+
+      if (duplicateWarnings.length > 0) {
+          let uniqueWarnings = [...new Set(duplicateWarnings)];
+          let msg = "Phát hiện dữ liệu đã tồn tại trong bảng 既存:\n\n";
+          for (let k = 0; k < Math.min(uniqueWarnings.length, 15); k++) {
+              msg += "- " + uniqueWarnings[k] + "\n";
+          }
+          if (uniqueWarnings.length > 15) {
+              msg += "... và " + (uniqueWarnings.length - 15) + " mục khác.\n";
+          }
+          msg += "\n👉 Vui lòng kiểm tra lại. Quá trình tạo Bulk đã bị hủy!";
+          
+          ui.alert("⚠️ CẢNH BÁO TRÙNG LẶP DỮ LIỆU", msg, ui.ButtonSet.OK);
+          return; 
+      }
+  }
+  // ==========================================
+
+  const loadingHtml = HtmlService.createHtmlOutput(
+    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+    '  <h3 style="margin: 0 0 10px 0; color: #1a73e8;">📦 Đang đóng gói dữ liệu...</h3>' +
+    '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang nén các file CSV. Vui lòng đợi...</p>' +
+    '</div>'
+  ).setWidth(350).setHeight(150);
+  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+
+  const eventIdMap = getEventIdMap(ss);
+
+  const exportConfig = [
+    { type: "CPN", fileName: "campaigns-template.csv", headers: ["campaign_id", "campaign_name", "budget_max", "budget_type", "launch_date", "end_date", "objective", "conversion_event_setting_ids", "target_countries", "location_ids", "platforms"] },
+    { type: "ADG", fileName: "ad-groups-template.csv", headers: ["ad_group_id", "campaign_id", "campaign_name", "adgroup_name", "max_bid", "context_hints"] },
+    { type: "AD", fileName: "ads-template.csv", headers: ["ad_id", "ad_group_id", "adgroup_name", "ad_name", "title", "copy", "link", "image_url", "image_file_id", "campaign_name", "image_name", "landing page parameters"] }
+  ];
+
+  const filesToDownload = [];
+  const timeZone = ss.getSpreadsheetTimeZone();
+  const currentDateString = Utilities.formatDate(new Date(), timeZone, "yyyy-MM-dd'T'00:00:00'Z'");
+  const yymmddDateString = Utilities.formatDate(new Date(), timeZone, "yyMMdd");
+
+  let campaignsDuplicateCount = 0; 
+  const resultSheetNames = [];
+
+  exportConfig.forEach(config => {
+    let targetSheetName = null;
+    const allSheets = ss.getSheets();
+    for (let s of allSheets) {
+        if (getSheetType(s.getName()) === config.type) {
+            targetSheetName = s.getName();
+            break;
+        }
+    }
+    
+    if (!targetSheetName) return; 
+    const sheet = ss.getSheetByName(targetSheetName);
+    resultSheetNames.push(`結果【${config.type}】`); 
+
+    const lastRow = sheet.getLastRow();
+    if (lastRow < 2) return;
+
+    const data = sheet.getDataRange().getDisplayValues();
+    const sourceHeaders = data[0].map(h => String(h).trim());
+
+    const csvData = [];
+    csvData.push(config.headers); 
+
+    for (let i = 1; i < data.length; i++) {
+      const rowData = data[i];
+      if (rowData.join("").trim() === "") continue; 
+
+      const csvRow = config.headers.map(reqHeader => {
+        const colIndex = sourceHeaders.indexOf(reqHeader);
+        let val = colIndex !== -1 ? rowData[colIndex] : ""; 
+
+        if (config.type === "AD") {
+            if (reqHeader === "campaign_name" && val === "") {
+                let cpColIdx = sourceHeaders.findIndex(h => String(h).trim().toLowerCase().includes("campaign"));
+                if (cpColIdx !== -1) val = String(rowData[cpColIdx]).trim();
+            }
+            if (reqHeader === "image_name") {
+                let img1ColIndex = sourceHeaders.indexOf("image_name_1");
+                if (img1ColIndex !== -1) val = String(rowData[img1ColIndex]).trim();
+            }
+            if (reqHeader === "landing page parameters") {
+                let lpColIdx = sourceHeaders.findIndex(h => String(h).trim().toLowerCase() === "landing page parameters");
+                if (lpColIdx !== -1) val = String(rowData[lpColIdx]).trim();
+            }
+        }
+
+        if (reqHeader === "conversion_event_setting_ids") {
+            let convColIdx = sourceHeaders.findIndex(h => h.toLowerCase().includes("conversionsevent") || h.toLowerCase().includes("conversion") || h.toLowerCase().includes("コンバージョン"));
+            if (convColIdx !== -1) {
+                let cellVal = String(rowData[convColIdx]).trim();
+                if (cellVal) {
+                    let events = cellVal.split(/[,;\n|]/).map(e => e.trim()).filter(e => e !== "");
+                    let mappedIds = [];
+                    for (let ev of events) {
+                        if (eventIdMap[ev]) mappedIds.push(eventIdMap[ev]);
+                    }
+                    if (mappedIds.length > 0) {
+                        val = JSON.stringify([...new Set(mappedIds)]);
+                    }
+                }
+            }
+        }
+
+        if (reqHeader === "budget_type") val = String(val).trim().toLowerCase(); 
+        if (reqHeader === "target_countries" && String(val).trim() === "日本") val = '["JP"]';
+        if (reqHeader === "budget_max" && val !== "") val = String(val).replace(/,/g, '').replace(/[^\d.-]/g, '');
+
+        if (reqHeader === "max_bid" && String(val).replace(/[\s]/g, '') === "成果最大化") {
+            val = "10";
+        }
+
+        if (reqHeader === "launch_date" || reqHeader === "end_date") {
+            let dateStr = String(val).trim();
+            if (dateStr !== "") {
+                let parsedDate = new Date(dateStr.replace(/-/g, '/'));
+                if (!isNaN(parsedDate.getTime())) {
+                    val = Utilities.formatDate(parsedDate, "GMT", "yyyy-MM-dd'T'HH:mm:ss'Z'");
+                }
+            } else if (reqHeader === "launch_date") {
+                val = currentDateString; 
+            }
+        }
+
+        if (reqHeader === "objective") {
+            let objStr = String(val).trim().toLowerCase();
+            if (objStr === "click" || objStr === "クリック" || objStr === "click最適") val = "Clicks";
+            else if (objStr === "cv" || objStr === "conversion" || objStr === "コンバージョン" || objStr === "cv最適") val = "Conversions";
+        }
+
+        if (reqHeader === "context_hints") {
+          let hasKeywordsCol = sourceHeaders.some(h => String(h).trim().toLowerCase() === "keywords");
+          
+          if (hasKeywordsCol) {
+            let kwArray = [];
+            for (let c = 0; c < sourceHeaders.length; c++) {
+              if (String(sourceHeaders[c]).trim().toLowerCase() === "keywords") { 
+                let cellVal = String(rowData[c]).trim();
+                if (cellVal !== "") kwArray.push('"' + cellVal + '"');
+              }
+            }
+            val = "[" + kwArray.join(",") + "]";
+          } else {
+            let ctxArray = [];
+            for (let c = 0; c < sourceHeaders.length; c++) {
+              if (String(sourceHeaders[c]).trim().toLowerCase() === "context_hints") {
+                let cellVal = String(rowData[c]).trim();
+                if (cellVal !== "") ctxArray.push('"' + cellVal + '"');
+              }
+            }
+            val = "[" + ctxArray.join(",") + "]";
+          }
+        }
+
+        if (reqHeader === "ad_name") {
+           let currentAdName = String(val).trim().normalize('NFC');
+           let imageName1 = "";
+           const img1ColIndex = sourceHeaders.indexOf("image_name_1");
+           if (img1ColIndex !== -1) imageName1 = String(rowData[img1ColIndex]).trim().normalize('NFC'); 
+           
+           if (currentAdName === "") val = yymmddDateString + "■" + imageName1;
+           else val = yymmddDateString + "■" + imageName1 + "■" + currentAdName;
+        }
+
+        if (reqHeader === "title" || reqHeader === "copy") {
+           let rawText = String(val).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+           let cleanParts = rawText.split('\n').map(p => p.trim()).filter(p => p.length > 0);
+           val = cleanParts.join("｜");
+        }
+
+        val = String(val);
+        if (val.includes(',') || val.includes('"') || val.includes('\n')) {
+          val = '"' + val.replace(/"/g, '""') + '"';
+        }
+        return val;
+      });
+      csvData.push(csvRow);
+    }
+
+    if (config.fileName === "campaigns-template.csv" && csvData.length > 2) {
+      let uniqueMap = new Map();
+      let cpNameIdx = config.headers.indexOf("campaign_name");
+      let convSettingIdx = config.headers.indexOf("conversion_event_setting_ids");
+      let duplicates = 0;
+
+      for (let r = 1; r < csvData.length; r++) {
+        let cpName = csvData[r][cpNameIdx];
+        let uniqueKey = cpName ? cpName : JSON.stringify(csvData[r]);
+
+        if (uniqueMap.has(uniqueKey)) {
+          duplicates++;
+          let existingRow = uniqueMap.get(uniqueKey);
+          
+          let existingIdsStr = existingRow[convSettingIdx];
+          let newIdsStr = csvData[r][convSettingIdx];
+          
+          let existingIds = [];
+          let newIds = [];
+          
+          if (existingIdsStr) { try { existingIds = JSON.parse(existingIdsStr.replace(/(^"|"$)/g, '').replace(/""/g, '"')); } catch(e){} }
+          if (newIdsStr) { try { newIds = JSON.parse(newIdsStr.replace(/(^"|"$)/g, '').replace(/""/g, '"')); } catch(e){} }
+          
+          let mergedIds = [...new Set([...existingIds, ...newIds])];
+          if (mergedIds.length > 0) {
+              let jsonVal = JSON.stringify(mergedIds);
+              if (jsonVal.includes('"')) jsonVal = '"' + jsonVal.replace(/"/g, '""') + '"';
+              existingRow[convSettingIdx] = jsonVal;
+          }
+        } else {
+          uniqueMap.set(uniqueKey, [...csvData[r]]);
+        }
+      }
+      
+      campaignsDuplicateCount = duplicates;
+      csvData.length = 1; 
+      uniqueMap.forEach(row => csvData.push(row));
+    }
+
+    const csvString = csvData.map(row => row.join(',')).join('\r\n');
+    const blob = Utilities.newBlob("\uFEFF" + csvString, "text/csv");
+    const base64 = Utilities.base64Encode(blob.getBytes());
+
+    filesToDownload.push({ name: config.fileName, base64: base64, folder: "" });
+  });
+
+  resultSheetNames.forEach(name => {
+    let rs = ss.getSheetByName(name);
+    if (rs) rs.clear(); 
+    else ss.insertSheet(name); 
+  });
+  
+  const mainSheet = ss.getSheetByName("データ");
+  if (mainSheet) ss.setActiveSheet(mainSheet);
+
+  if (filesToDownload.length === 0) {
+    showStatusDialog("Không có dữ liệu hợp lệ để xuất file ZIP.", true);
+    return;
+  }
+
+  var htmlTemplate = HtmlService.createTemplateFromFile('Index');
+  htmlTemplate.fileTasksJson = JSON.stringify(filesToDownload);
+  htmlTemplate.zipFileName = "Export_Bulk.zip"; 
+  htmlTemplate.warningMsg = campaignsDuplicateCount > 0 ? "Đã tự động gộp " + campaignsDuplicateCount + " dòng trùng lặp trong file campaigns-template!" : "";
+  
+  var htmlOutput = htmlTemplate.evaluate().setWidth(450).setHeight(360);
+  ui.showModelessDialog(htmlOutput, 'Xuất Dữ Liệu ZIP');
+}
+
+/**
+ * Hàm gán cho nút "CHECK" 
+ */
+function checkData() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  
+  const loadingHtml = HtmlService.createHtmlOutput(
+    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+    '  <h3 style="margin: 0 0 10px 0; color: #f29900;">🔍 Đang đối chiếu dữ liệu...</h3>' +
+    '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang dò quét và so khớp ID/Key... Vui lòng đợi</p>' +
+    '</div>'
+  ).setWidth(350).setHeight(150);
+  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+
+  const eventIdMap = getEventIdMap(ss); 
+
+  const sheetsToCompare = [];
+  ss.getSheets().forEach(s => {
+      let type = getSheetType(s.getName());
+      if (type && !s.getName().includes("結果")) {
+          sheetsToCompare.push({ orig: s.getName(), res: `結果【${type}】`, type: type });
+      }
+  });
+
+  const typeOrder = { "CPN": 1, "ADG": 2, "AD": 3 };
+  sheetsToCompare.sort((a, b) => typeOrder[a.type] - typeOrder[b.type]);
+
+  let highestLevel = "AD";
+  if (sheetsToCompare.some(p => p.type === "CPN")) highestLevel = "CPN";
+  else if (sheetsToCompare.some(p => p.type === "ADG")) highestLevel = "ADG";
+
+  const timeZone = ss.getSpreadsheetTimeZone();
+  const currentDateString = Utilities.formatDate(new Date(), timeZone, "yyyy-MM-dd'T'00:00:00'Z'");
+  const yymmddDateString = Utilities.formatDate(new Date(), timeZone, "yyMMdd");
+
+  let allSuccess = true;
+  let summaryResults = []; 
+
+  let campaignMap = new Map();         
+  let adGroupMap = new Map();            
+  let adMap = new Map();                 
+  let adGroupToCampaignMap = new Map();  
+
+  ss.getSheets().forEach(s => {
+    if (s.getName().includes("結果")) {
+      let data = s.getDataRange().getDisplayValues();
+      if (data.length > 1) {
+        let headers = data[0].map(h => String(h).replace(/[\u200B-\u200D\uFEFF\n\s]/g, '').toLowerCase());
+        
+        let cpIdCols = [], cpNameCols = [];
+        let adgIdCols = [], adgNameCols = [];
+        let adIdCols = [], adNameCols = [];
+
+        headers.forEach((h, idx) => {
+          if (h === "campaign_id") cpIdCols.push(idx);
+          if (h === "campaign_name" || h === "campaign") cpNameCols.push(idx);
+          if (h === "ad_group_id" || h === "adgroup_id") adgIdCols.push(idx);
+          if (h === "ad_group_name" || h === "adgroup_name") adgNameCols.push(idx);
+          if (h === "ad_id") adIdCols.push(idx);
+          if (h === "ad_name") adNameCols.push(idx);
+        });
+
+        for (let i = 1; i < data.length; i++) {
+          let row = data[i];
+          
+          cpIdCols.forEach(idCol => {
+            let id = String(row[idCol]).trim();
+            if (id) {
+              cpNameCols.forEach(nameCol => {
+                let name = String(row[nameCol]).trim();
+                if (name) campaignMap.set(id, name);
+              });
+            }
+          });
+
+          adgIdCols.forEach(idCol => {
+            let id = String(row[idCol]).trim();
+            if (id) {
+              adgNameCols.forEach(nameCol => {
+                let name = String(row[nameCol]).trim();
+                if (name) adGroupMap.set(id, name);
+              });
+              
+              cpNameCols.forEach(cpNameCol => {
+                let cpName = String(row[cpNameCol]).trim();
+                if (cpName) adGroupToCampaignMap.set(id, cpName);
+              });
+            }
+          });
+
+          adIdCols.forEach(idCol => {
+            let id = String(row[idCol]).trim();
+            if (id) {
+              adNameCols.forEach(nameCol => {
+                let name = String(row[nameCol]).trim();
+                if (name) adMap.set(id, name);
+              });
+            }
+          });
+        }
+      }
+    }
+  });
+
+  sheetsToCompare.forEach(pair => {
+    const origSheet = ss.getSheetByName(pair.orig);
+    const resSheet = ss.getSheetByName(pair.res);
+
+    if (!origSheet || !resSheet) return; 
+
+    resSheet.getDataRange().breakApart();
+    origSheet.getDataRange().breakApart();
+
+    let initialLastCol = Math.max(resSheet.getLastColumn(), 1);
+    let resHeaders = resSheet.getRange(1, 1, 1, initialLastCol).getValues()[0];
+    let hasCheckColumn = String(resHeaders[0]).replace(/[\u200B-\u200D\uFEFF\s]/g, '').startsWith("結果：");
+    
+    if (!hasCheckColumn) {
+      resSheet.insertColumnBefore(1);
+      let newLastCol = Math.max(resSheet.getLastColumn(), 1);
+      resHeaders = resSheet.getRange(1, 1, 1, newLastCol).getValues()[0];
+      hasCheckColumn = true;
+    }
+
+    let reqCols = [];
+    if (pair.type === "CPN") reqCols = ["campaign_name"];
+    if (pair.type === "ADG") reqCols = ["campaign_name", "ad_group_name"];
+    if (pair.type === "AD") reqCols = ["campaign_name", "ad_group_name", "ad_name"];
+
+    let currentHeaders = resSheet.getRange(1, 1, 1, Math.max(resSheet.getLastColumn(), 1)).getValues()[0];
+    let hNorm = currentHeaders.map(h => String(h).replace(/[\u200B-\u200D\uFEFF\n\s]/g, '').toLowerCase());
+
+    let insertOffset = hasCheckColumn ? 2 : 1; 
+
+    reqCols.forEach(req => {
+      let reqNorm = req.replace(/_/g, ''); 
+      let foundIdx = hNorm.findIndex(h => h === reqNorm || h === req);
+      if (foundIdx === -1) {
+        resSheet.insertColumnBefore(insertOffset);
+        resSheet.getRange(1, insertOffset).setValue(req).setFontWeight("bold").setBackground("#d9ead3");
+        currentHeaders = resSheet.getRange(1, 1, 1, Math.max(resSheet.getLastColumn(), 1)).getValues()[0];
+        hNorm = currentHeaders.map(h => String(h).replace(/[\u200B-\u200D\uFEFF\n\s]/g, '').toLowerCase());
+        insertOffset++;
+      }
+    });
+
+    const tempLastRow = Math.max(resSheet.getLastRow(), 1);
+    if (tempLastRow > 1) {
+      let resDataFull = resSheet.getRange(1, 1, tempLastRow, Math.max(resSheet.getLastColumn(), 1)).getValues();
+      let curHeaders = resDataFull[0].map(h => String(h).replace(/[\u200B-\u200D\uFEFF\n\s]/g, '').toLowerCase());
+
+      let cpIdCols = [], cpNameCols = [];
+      let adgIdCols = [], adgNameCols = [];
+      let adIdCols = [], adNameCols = [];
+
+      curHeaders.forEach((h, idx) => {
+        if (h === "campaign_id") cpIdCols.push(idx);
+        if (h === "campaign_name" || h === "campaign") cpNameCols.push(idx);
+        if (h === "ad_group_id" || h === "adgroup_id") adgIdCols.push(idx);
+        if (h === "ad_group_name" || h === "adgroup_name") adgNameCols.push(idx);
+        if (h === "ad_id") adIdCols.push(idx);
+        if (h === "ad_name") adNameCols.push(idx);
+      });
+
+      let needsUpdate = false;
+      for (let i = 1; i < resDataFull.length; i++) {
+        let row = resDataFull[i];
+
+        let currentCpId = cpIdCols.length > 0 ? String(row[cpIdCols[0]]).trim() : "";
+        let currentAdgId = adgIdCols.length > 0 ? String(row[adgIdCols[0]]).trim() : "";
+        let currentAdId = adIdCols.length > 0 ? String(row[adIdCols[0]]).trim() : "";
+
+        if (currentCpId && campaignMap.has(currentCpId)) {
+           let mappedName = campaignMap.get(currentCpId);
+           cpNameCols.forEach(nameCol => {
+               if (String(row[nameCol]).trim() === "") {
+                   row[nameCol] = mappedName;
+                   needsUpdate = true;
+               }
+           });
+        }
+        
+        if (currentAdgId && adGroupToCampaignMap.has(currentAdgId)) {
+           let mappedCpName = adGroupToCampaignMap.get(currentAdgId);
+           cpNameCols.forEach(nameCol => {
+               if (String(row[nameCol]).trim() === "") {
+                   row[nameCol] = mappedCpName;
+                   needsUpdate = true;
+               }
+           });
+        }
+
+        if (currentAdgId && adGroupMap.has(currentAdgId)) {
+           let mappedName = adGroupMap.get(currentAdgId);
+           adgNameCols.forEach(nameCol => {
+               if (String(row[nameCol]).trim() === "") {
+                   row[nameCol] = mappedName;
+                   needsUpdate = true;
+               }
+           });
+        }
+
+        if (currentAdId && adMap.has(currentAdId)) {
+           let mappedName = adMap.get(currentAdId);
+           adNameCols.forEach(nameCol => {
+               if (String(row[nameCol]).trim() === "") {
+                   row[nameCol] = mappedName;
+                   needsUpdate = true;
+               }
+           });
+        }
+
+        let updatedCpName = cpNameCols.length > 0 ? String(row[cpNameCols[0]]).trim() : "";
+        let updatedAdgName = adgNameCols.length > 0 ? String(row[adgNameCols[0]]).trim() : "";
+        let updatedAdName = adNameCols.length > 0 ? String(row[adNameCols[0]]).trim() : "";
+
+        if (currentCpId && updatedCpName) campaignMap.set(currentCpId, updatedCpName);
+        if (currentAdgId && updatedAdgName) adGroupMap.set(currentAdgId, updatedAdgName);
+        if (currentAdId && updatedAdName) adMap.set(currentAdId, updatedAdName);
+        if (currentAdgId && updatedCpName) adGroupToCampaignMap.set(currentAdgId, updatedCpName); 
+      }
+
+      if (needsUpdate) {
+          resSheet.getRange(1, 1, tempLastRow, Math.max(resSheet.getLastColumn(), 1)).setValues(resDataFull);
+      }
+    }
+
+    const lastRowRes = Math.max(resSheet.getLastRow(), 1);
+    const lastColRes = Math.max(resSheet.getLastColumn(), 2);
+
+    if (lastRowRes > 1) {
+      resSheet.getRange(2, 2, lastRowRes, lastColRes).setBackground(null);
+    }
+    resSheet.getRange(1, 1, lastRowRes + 100, 1).clearContent().setBackground(null);
+
+    const origData = origSheet.getRange(1, 1, Math.max(origSheet.getLastRow(), 1), Math.max(origSheet.getLastColumn(), 1)).getDisplayValues();
+    const resData = resSheet.getRange(1, 1, Math.max(resSheet.getLastRow(), 1), Math.max(resSheet.getLastColumn(), 1)).getDisplayValues(); 
+
+    const origHeaderRow = origData[0] || [];
+    const resHeaderRow = resData[0] || [];
+    
+    const origHeadersNorm = origHeaderRow.map(h => String(h).replace(/[\u200B-\u200D\uFEFF\n]/g, '').trim().normalize('NFC').toLowerCase());
+    const resHeadersNorm = resHeaderRow.map(h => String(h).replace(/[\u200B-\u200D\uFEFF\n]/g, '').trim().normalize('NFC').toLowerCase());
+
+    let resCpIdxs = [];
+    let resAdgIdxs = [];
+    let resAdIdxs = [];
+    
+    resHeadersNorm.forEach((h, idx) => {
+        if (h === "campaign_name" || h === "campaign") resCpIdxs.push(idx);
+        if (h === "ad_group_name" || h === "adgroup_name") resAdgIdxs.push(idx);
+        if (h === "ad_name" || h === "adname") resAdIdxs.push(idx);
+    });
+
+    if (resCpIdxs.length === 0) resCpIdxs = [-1];
+    if (resAdgIdxs.length === 0) resAdgIdxs = [-1];
+    if (resAdIdxs.length === 0) resAdIdxs = [-1];
+
+    let img1Idx = origHeadersNorm.indexOf("image_name_1");
+    let origTitleIdx = origHeadersNorm.indexOf("title");
+    let origCopyIdx = origHeadersNorm.indexOf("copy");
+    let origLinkIdx = origHeadersNorm.indexOf("link");
+
+    let keywordsCols = [];
+    let contextHintsCols = [];
+    origHeadersNorm.forEach((h, idx) => {
+      if (h === "keywords") keywordsCols.push(idx);
+      if (h === "context_hints") contextHintsCols.push(idx);
+    });
+
+    let origMap = new Map();
+    let origCpIdx = origHeadersNorm.indexOf("campaign_name");
+    if (origCpIdx === -1) origCpIdx = origHeadersNorm.findIndex(h => h.includes("campaign"));
+    
+    let origAdgIdx = origHeadersNorm.indexOf("adgroup_name");
+    if (origAdgIdx === -1) origAdgIdx = origHeadersNorm.findIndex(h => h.includes("adgroup") || h.includes("ad_group"));
+
+    for (let i = 1; i < origData.length; i++) {
+        let cp = origCpIdx !== -1 ? String(origData[i][origCpIdx]).trim().normalize('NFC') : "";
+        let adg = origAdgIdx !== -1 ? String(origData[i][origAdgIdx]).trim().normalize('NFC') : "";
+        
+        let rawRowStr = origData[i].join("").toLowerCase();
+        if (rawRowStr.replace(/[\s]/g, '') === "") continue; 
+        if ((rawRowStr.includes("required") || rawRowStr.includes("必須") || rawRowStr.includes("recommended")) && !rawRowStr.includes("http")) continue;
+        if (cp.toLowerCase().includes("required") || cp.includes("必須")) continue;
+
+        let mapKey = "";
+        if (pair.type === "CPN") mapKey = cp.replace(/[\s"']/g, '').toLowerCase();
+        else if (pair.type === "ADG" || pair.type === "AD") mapKey = (cp + "■" + adg).replace(/[\s"']/g, '').toLowerCase();
+
+        if (mapKey !== "" && mapKey !== "■") {
+            if (!origMap.has(mapKey)) origMap.set(mapKey, []);
+            origMap.get(mapKey).push({ row: origData[i], used: false });
+        }
+    }
+
+    let sheetHasError = false;
+    let checkResults = []; 
+
+    let resTitleIdx = resHeadersNorm.indexOf("title");
+    if (resTitleIdx === -1) resTitleIdx = resHeadersNorm.indexOf("ad_title");
+    let resCopyIdx = resHeadersNorm.indexOf("copy");
+    if (resCopyIdx === -1) resCopyIdx = resHeadersNorm.indexOf("ad_copy");
+    let resLinkIdx = resHeadersNorm.indexOf("link");
+    if (resLinkIdx === -1) resLinkIdx = resHeadersNorm.indexOf("ad_url");
+
+    for (let r = 1; r < resData.length; r++) {
+      let resRowStr = resData[r].slice(1).join("").trim(); 
+      if (resRowStr === "") {
+        checkResults.push([""]);
+        continue; 
+      }
+
+      let candidates = null;
+      let rKeyVal = "";
+      let rImg = "";
+
+      for (let cIdx of resCpIdxs) {
+          for (let aIdx of resAdgIdxs) {
+              let cp = cIdx !== -1 ? String(resData[r][cIdx]).trim().normalize('NFC') : "";
+              let adg = aIdx !== -1 ? String(resData[r][aIdx]).trim().normalize('NFC') : "";
+              
+              let tempKey = "";
+              if (pair.type === "CPN") tempKey = cp.replace(/[\s"']/g, '').toLowerCase();
+              else if (pair.type === "ADG" || pair.type === "AD") tempKey = (cp + "■" + adg).replace(/[\s"']/g, '').toLowerCase();
+              
+              if (tempKey !== "" && origMap.has(tempKey)) {
+                  candidates = origMap.get(tempKey);
+                  rKeyVal = tempKey;
+                  break;
+              }
+          }
+          if (candidates) break;
+      }
+
+      if (candidates && pair.type === "AD") {
+          for (let adIdx of resAdIdxs) {
+              let rawAd = adIdx !== -1 ? String(resData[r][adIdx]).trim().normalize('NFC') : "";
+              if (rawAd.includes("■")) {
+                  let parts = rawAd.split("■");
+                  if (parts.length >= 2) {
+                      rImg = parts[1]; 
+                      break;
+                  }
+              }
+          }
+      }
+
+      let origRowToCompare = null;
+      if (candidates && candidates.length > 0) {
+          if (pair.type === "AD") {
+              let resTitle = resTitleIdx !== -1 ? String(resData[r][resTitleIdx]).trim().normalize('NFC').replace(/[\s"'｜|]/g, '').toLowerCase() : "";
+              let resCopy = resCopyIdx !== -1 ? String(resData[r][resCopyIdx]).trim().normalize('NFC').replace(/[\s"'｜|]/g, '').toLowerCase() : "";
+              let resLink = resLinkIdx !== -1 ? String(resData[r][resLinkIdx]).trim().normalize('NFC').replace(/[\s"'｜|]/g, '').toLowerCase() : "";
+              let cleanRImg = rImg.replace(/[\s"']/g, '').toLowerCase();
+              
+              let bestCand = null;
+              let bestScore = -1;
+              
+              for (let cand of candidates) {
+                  if (cand.used) continue;
+                  let score = 0;
+                  
+                  let oTitle = origTitleIdx !== -1 ? String(cand.row[origTitleIdx]).trim().normalize('NFC').replace(/\r\n/g, '\n').replace(/\r/g, '\n') : "";
+                  let oCopy = origCopyIdx !== -1 ? String(cand.row[origCopyIdx]).trim().normalize('NFC').replace(/\r\n/g, '\n').replace(/\r/g, '\n') : "";
+                  let oLink = origLinkIdx !== -1 ? String(cand.row[origLinkIdx]).trim().normalize('NFC').replace(/[\s"'｜|]/g, '').toLowerCase() : "";
+                  let oImg = img1Idx !== -1 ? String(cand.row[img1Idx]).trim().normalize('NFC').replace(/[\s"']/g, '').toLowerCase() : "";
+                  
+                  oTitle = oTitle.split('\n').map(p => p.trim()).filter(p => p.length > 0).join("｜").replace(/[\s"'｜|]/g, '').toLowerCase();
+                  oCopy = oCopy.split('\n').map(p => p.trim()).filter(p => p.length > 0).join("｜").replace(/[\s"'｜|]/g, '').toLowerCase();
+                  
+                  if (oTitle === resTitle && resTitle !== "") score += 2;
+                  if (oCopy === resCopy && resCopy !== "") score += 2;
+                  
+                  let decOLink = oLink; let decRLink = resLink;
+                  try { decOLink = decodeURI(oLink); } catch(e){}
+                  try { decRLink = decodeURI(resLink); } catch(e){}
+                  if (decOLink === decRLink && decRLink !== "") score += 1;
+                  
+                  if (oImg === cleanRImg && cleanRImg !== "") score += 2;
+                  
+                  if (score > bestScore) {
+                      bestScore = score;
+                      bestCand = cand;
+                  }
+              }
+              
+              if (bestCand) {
+                  origRowToCompare = bestCand.row;
+                  bestCand.used = true;
+              } else {
+                  let firstUnused = candidates.find(c => !c.used);
+                  if (firstUnused) {
+                      origRowToCompare = firstUnused.row;
+                      firstUnused.used = true;
+                  } else {
+                      origRowToCompare = candidates[0].row; 
+                  }
+              }
+          } else {
+              let cand = candidates.find(c => !c.used);
+              if (cand) {
+                  origRowToCompare = cand.row;
+                  cand.used = true;
+              } else {
+                  origRowToCompare = candidates[0].row;
+              }
+          }
+      }
+
+      let rowMatchFailed = false;
+
+      if (origRowToCompare) {
+        
+        let expectedIds = [];
+        let convSettingIdx = resHeadersNorm.indexOf("conversion_event_setting_ids");
+        
+        if (pair.type === "CPN") {
+             let origConvIdx = origHeadersNorm.findIndex(h => h.includes("conversionsevent") || h.includes("conversion") || h.includes("コンバージョン"));
+             if (origConvIdx !== -1) {
+                  let allCandidates = origMap.get(rKeyVal) || [];
+                  for (let cand of allCandidates) {
+                      let cellVal = String(cand.row[origConvIdx]).trim();
+                      if (cellVal) {
+                          let events = cellVal.split(/[,;\n|]/).map(e => e.trim()).filter(e => e !== "");
+                          for (let ev of events) {
+                              if (eventIdMap[ev]) expectedIds.push(eventIdMap[ev]);
+                          }
+                      }
+                  }
+                  expectedIds = [...new Set(expectedIds)];
+             }
+        }
+
+        let uniqueHeaders = [...new Set(resHeadersNorm.slice(1).filter(h => h !== ""))];
+
+        for (let h of uniqueHeaders) {
+            let colsForH = [];
+            for (let c = 1; c < resData[r].length; c++) {
+                if (resHeadersNorm[c] === h) colsForH.push(c);
+            }
+
+            let headerToFind = h;
+            if (h === "ad_group_name") headerToFind = "adgroup_name"; 
+            if (h === "ad_url") headerToFind = "link"; 
+            if (h === "ad_title") headerToFind = "title"; 
+            if (h === "ad_copy") headerToFind = "copy";
+            if (h === "image_name") headerToFind = "image_name_1";
+
+            let origIdx = origHeadersNorm.indexOf(headerToFind);
+            let oVal = "";
+            if (origIdx !== -1) {
+                oVal = String(origRowToCompare[origIdx]).replace(/[\u200B-\u200D\uFEFF]/g, '').trim().normalize('NFC');
+            }
+
+            let headerSatisfied = false;
+
+            for (let c of colsForH) {
+                let rVal = String(resData[r][c]).replace(/[\u200B-\u200D\uFEFF]/g, '').trim().normalize('NFC');
+                let isMatch = true;
+
+                if (h === "conversion_event_setting_ids") {
+                    if (pair.type === "CPN") {
+                        let rIds = [];
+                        try {
+                            let cleanRVal = rVal.replace(/(^"|"$)/g, '').replace(/""/g, '"');
+                            if (cleanRVal.trim() !== "") {
+                                rIds = JSON.parse(cleanRVal);
+                                if (!Array.isArray(rIds)) rIds = [rIds];
+                            }
+                        } catch(e) {
+                            let cleanR = rVal.replace(/[\[\]\s"']/g, '');
+                            if (cleanR !== "") rIds = cleanR.split(',').filter(x => x);
+                        }
+                        
+                        let rArr = rIds.map(x => String(x).trim()).sort();
+                        let eArr = expectedIds.map(x => String(x).trim()).sort();
+                        isMatch = (rArr.join(',') === eArr.join(','));
+                    } else {
+                        isMatch = true;
+                    }
+                }
+                else if (h === "campaign_status") {
+                    let exp = (highestLevel === "CPN") ? "paused" : "active";
+                    isMatch = (rVal.toLowerCase() === exp);
+                }
+                else if (h === "ad_group_status") {
+                    let exp = (highestLevel === "ADG") ? "paused" : "active";
+                    isMatch = (rVal.toLowerCase() === exp);
+                }
+                else if (h === "ad_status") {
+                    let exp = (highestLevel === "AD") ? "paused" : "active";
+                    isMatch = (rVal.toLowerCase() === exp);
+                }
+                else if (h === "platforms") {
+                    let cleanR = rVal.replace(/[\s"']/g, ''); 
+                    isMatch = (cleanR === "[ios_app,android_app,web]");
+                }
+                else if (h === "context_hints") {
+                    let expectedKw = "";
+                    if (keywordsCols.length > 0) {
+                        let kwArray = [];
+                        keywordsCols.forEach(idx => {
+                            let kw = String(origRowToCompare[idx] || "").replace(/[\u200B-\u200D\uFEFF]/g, '').trim().normalize('NFC');
+                            if (kw !== "") kwArray.push('"' + kw + '"'); 
+                        });
+                        expectedKw = "[" + kwArray.join(",") + "]";
+                    } else if (contextHintsCols.length > 0) {
+                        let ctxArray = [];
+                        contextHintsCols.forEach(idx => {
+                            let ctx = String(origRowToCompare[idx] || "").replace(/[\u200B-\u200D\uFEFF]/g, '').trim().normalize('NFC');
+                            if (ctx !== "") ctxArray.push('"' + ctx + '"'); 
+                        });
+                        expectedKw = "[" + ctxArray.join(",") + "]";
+                    }
+                    if (expectedKw === "") expectedKw = "[]"; 
+                    let cleanExpected = expectedKw.replace(/[\s]/g, '');
+                    let cleanRVal = (rVal === "") ? "[]" : rVal.replace(/[\s]/g, ''); 
+                    isMatch = (cleanExpected === cleanRVal);
+                }
+                else if (origIdx !== -1) {
+                    if (h === "campaign_name" && rVal === "") {
+                        isMatch = true; 
+                    }
+                    else if (h === "budget_max") {
+                        let oNum = oVal.replace(/[^0-9.-]/g, '');
+                        let rNum = rVal.replace(/[^0-9.-]/g, '');
+                        oNum = oNum !== "" ? parseFloat(oNum).toString() : "";
+                        rNum = rNum !== "" ? parseFloat(rNum).toString() : "";
+                        isMatch = (oNum === rNum);
+                    }
+                    else if (h === "max_bid") {
+                        let cleanO = oVal.replace(/[\s]/g, '');
+                        if (cleanO === "成果最大化" && rVal === "") {
+                            isMatch = true;
+                        } else {
+                            let oNum = oVal.replace(/[^0-9.-]/g, '');
+                            let rNum = rVal.replace(/[^0-9.-]/g, '');
+                            if (oNum !== "" && rNum !== "") {
+                                isMatch = (parseFloat(oNum) === parseFloat(rNum));
+                            } else {
+                                isMatch = (oVal.replace(/[\s"']/g, '').toLowerCase() === rVal.replace(/[\s"']/g, '').toLowerCase());
+                            }
+                        }
+                    }
+                    else if (h === "ad_url") {
+                        let oUrl = oVal.replace(/[\s"']/g, '');
+                        let rUrl = rVal.replace(/[\s"']/g, '');
+                        try { oUrl = decodeURI(oUrl); } catch(e) {}
+                        try { rUrl = decodeURI(rUrl); } catch(e) {}
+                        isMatch = (oUrl === rUrl);
+                    }
+                    else if (h === "budget_type") {
+                        isMatch = (oVal.replace(/[\s"']/g, '').toLowerCase() === rVal.replace(/[\s"']/g, '').toLowerCase());
+                    }
+                    else if (h === "target_countries") {
+                        let cleanO = oVal.toUpperCase();
+                        if (cleanO === "日本" || cleanO === "JP") cleanO = "JP";
+                        let cleanR = rVal.toUpperCase();
+                        if (cleanR.includes("JP") || cleanR.includes("日本")) cleanR = "JP";
+                        isMatch = (cleanO === cleanR);
+                    }
+                    else if (h === "launch_date" || h === "end_date") {
+                        let expectedVal = oVal;
+                        if (expectedVal !== "") {
+                            let parsedDate = new Date(expectedVal.replace(/-/g, '/'));
+                            if (!isNaN(parsedDate.getTime())) {
+                                expectedVal = Utilities.formatDate(parsedDate, "GMT", "yyyy-MM-dd'T'HH:mm:ss'Z'");
+                            }
+                        } else if (h === "launch_date") {
+                            expectedVal = currentDateString;
+                        }
+                        isMatch = (expectedVal === rVal);
+                    }
+                    else if (h === "objective") {
+                        let cleanO = oVal.replace(/[\s"']/g, '').toLowerCase();
+                        let cleanR = rVal.replace(/[\s"']/g, '').toLowerCase();
+                        if (cleanO === "click" || cleanO === "クリック" || cleanO === "click最適") cleanO = "clicks";
+                        if (cleanO === "cv" || cleanO === "conversion" || cleanO === "コンバージョン" || cleanO === "cv最適") cleanO = "conversions";
+                        isMatch = (cleanO === cleanR);
+                    }
+                    else if (h === "title" || h === "copy" || h === "ad_title" || h === "ad_copy") {
+                        let rawText = String(oVal).replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+                        let cleanParts = rawText.split('\n').map(p => p.trim()).filter(p => p.length > 0);
+                        let cleanOVal = cleanParts.join("｜").replace(/[\s"']/g, '').toLowerCase();
+                        let cleanRVal = rVal.replace(/[\s"']/g, '').toLowerCase();
+                        isMatch = (cleanOVal === cleanRVal);
+                    }
+                    else if (h === "ad_name") {
+                        let img1 = img1Idx !== -1 ? String(origRowToCompare[img1Idx]).trim().normalize('NFC') : "";
+                        let expectedFull = (oVal === "") ? (yymmddDateString + "■" + img1) : (yymmddDateString + "■" + img1 + "■" + oVal);
+                        let cleanExpected = expectedFull.replace(/[\s"']/g, '').toLowerCase();
+                        let cleanRVal = rVal.replace(/[\s"']/g, '').toLowerCase();
+                        isMatch = (cleanExpected === cleanRVal);
+                    }
+                    else {
+                        isMatch = (oVal.replace(/[\s"']/g, '').toLowerCase() === rVal.replace(/[\s"']/g, '').toLowerCase());
+                    }
+                } else {
+                    isMatch = true;
+                }
+
+                if (!isMatch && origIdx !== -1) {
+                    let cleanOText = String(oVal).replace(/[\s"']/g, '').toLowerCase();
+                    let cleanRText = String(rVal).replace(/[\s"']/g, '').toLowerCase();
+                    if (cleanRText.length >= 4 && cleanOText.includes(cleanRText)) {
+                        isMatch = true;
+                    }
+                }
+
+                if (isMatch) {
+                    headerSatisfied = true;
+                    break;
+                }
+            }
+
+            if (!headerSatisfied) {
+                rowMatchFailed = true;
+                for (let c of colsForH) {
+                    resSheet.getRange(r + 1, c + 1).setBackground("#fff2cc");
+                }
+            }
+        }
+
+        if (!rowMatchFailed) {
+            checkResults.push(["OK"]);
+        } else {
+            checkResults.push(["NG"]);
+            sheetHasError = true;
+        }
+
+      } else {
+        checkResults.push(["NG"]);
+        sheetHasError = true;
+        resCpIdxs.forEach(c => { if (c !== -1) resSheet.getRange(r + 1, c + 1).setBackground("#fff2cc"); });
+        resAdgIdxs.forEach(c => { if (c !== -1) resSheet.getRange(r + 1, c + 1).setBackground("#fff2cc"); });
+      }
+    }
+
+    if (checkResults.length > 0) {
+      resSheet.getRange(2, 1, checkResults.length, 1).setValues(checkResults);
+      resSheet.getRange(2, 1, checkResults.length, 1).setHorizontalAlignment("center");
+    }
+
+    let validResCount = checkResults.filter(r => r[0] !== "").length;
+    
+    let expectedFinalCount = 0;
+    if (pair.type === "CPN") {
+        expectedFinalCount = origMap.size;
+    } else {
+        origMap.forEach(arr => expectedFinalCount += arr.length);
+    }
+    
+    if (expectedFinalCount !== validResCount) sheetHasError = true;
+
+    const a1Cell = resSheet.getRange(1, 1);
+    a1Cell.setHorizontalAlignment("center");
+    
+    if (!sheetHasError && validResCount > 0) {
+      a1Cell.setValue("結果：OK").setBackground("#0f9d58").setFontColor("white").setFontWeight("bold");
+      summaryResults.push({ name: pair.res, status: "OK", valid: validResCount });
+    } else {
+      a1Cell.setValue("結果：NG").setBackground("#ea4335").setFontColor("white").setFontWeight("bold");
+      allSuccess = false;
+      let issue = (expectedFinalCount !== validResCount) ? `Lệch số lượng ID (Gốc cần: ${expectedFinalCount} / KQ: ${validResCount})` : `Sai lệch ô dữ liệu`;
+      if (validResCount === 0) issue = `Chưa có dữ liệu`;
+      summaryResults.push({ name: pair.res, status: "NG", issue: issue });
+    }
+  });
+
+  let detailMsg = `<div style="text-align: left; background: #f8f9fa; padding: 12px; border-radius: 6px; margin-top: 10px; border: 1px solid #dadce0;">`;
+  summaryResults.forEach(res => {
+      if (res.status === "OK") {
+          detailMsg += `<div style="margin-bottom: 6px; color: #0f9d58; font-size: 13px;">✅ <b>${res.name}</b>: Khớp (${res.valid} dòng)</div>`;
+      } else {
+          detailMsg += `<div style="margin-bottom: 6px; color: #d93025; font-size: 13px;">❌ <b>${res.name}</b>: ${res.issue}</div>`;
+      }
+  });
+  detailMsg += `</div>`;
+
+  if (allSuccess) {
+    let deptName = "";
+    let cpnSheetName = sheetsToCompare.find(p => p.type === "CPN")?.orig;
+    const cpnSheet = cpnSheetName ? ss.getSheetByName(cpnSheetName) : null;
+    if (cpnSheet) {
+      const data = cpnSheet.getDataRange().getDisplayValues();
+      if (data.length > 0) {
+        const headers = data[0].map(h => String(h).replace(/[\u200B-\u200D\uFEFF\n\s]/g, ''));
+        const targetColName = "領域名/事業部名※請求先がわかる名称".replace(/[\u200B-\u200D\uFEFF\n\s]/g, '');
+        const colIdx = headers.findIndex(h => h.includes(targetColName) || targetColName.includes(h));
+        
+        if (colIdx !== -1) {
+          for (let i = 1; i < data.length; i++) {
+            if (String(data[i][colIdx]).trim() !== "") {
+              deptName = String(data[i][colIdx]).trim();
+              break; 
+            }
+          }
+        }
+      }
+    }
+
+    SpreadsheetApp.flush();
+
+    try {
+      const copyDateString = Utilities.formatDate(new Date(), timeZone, "yyyyMMdd");
+      const oldName = ss.getName();
+      let newFileName = copyDateString + "■" + oldName;
+      if (deptName !== "") {
+        newFileName += "■" + deptName;
+      }
+      
+      const fileId = ss.getId();
+      const currentFile = DriveApp.getFileById(fileId);
+      const parentFolder = currentFile.getParents().next(); 
+      const newFile = currentFile.makeCopy(newFileName, parentFolder); 
+      
+      try {
+          const editors = currentFile.getEditors();
+          editors.forEach(user => newFile.addEditor(user.getEmail()));
+          
+          const viewers = currentFile.getViewers();
+          viewers.forEach(user => newFile.addViewer(user.getEmail()));
+      } catch (permError) {}
+
+      const newSs = SpreadsheetApp.openById(newFile.getId());
+      let targetSheet = null;
+      for (let s of newSs.getSheets()) {
+          if (s.getName().includes("結果【")) {
+              targetSheet = s; break;
+          }
+      }
+      let targetUrl = newFile.getUrl();
+      if (targetSheet) {
+        targetUrl = "https://docs.google.com/spreadsheets/d/" + newFile.getId() + "/edit#gid=" + targetSheet.getSheetId();
+      }
+
+      let finalMsg = `<b style="font-size:14px;">Hoàn tất! Dữ liệu khớp chính xác.</b>`;
+      finalMsg += `<div style="margin-top:8px; font-size:12px; color:#1a73e8; background:#e8f0fe; padding:8px; border-radius:4px;"><b>Đã tự động tạo Backup:</b><br/>${newFileName}<br/>`;
+      finalMsg += `<a href="${targetUrl}" target="_blank" style="display:inline-block; margin-top:10px; padding:8px 16px; background-color:#1a73e8; color:white; font-weight:bold; border-radius:4px; text-decoration:none;">🔗 MỞ FILE BACKUP</a></div>`;
+      finalMsg += `${detailMsg}`;
+      
+      finalMsg += `<script>setTimeout(function(){ window.open("${targetUrl}", "_blank"); }, 800);</script>`;
+      
+      showStatusDialog(finalMsg, false, 320); 
+
+    } catch (error) {
+      let finalMsg = `<b style="font-size:14px;">Dữ liệu khớp chính xác!</b>`;
+      finalMsg += `<div style="margin-top:8px; font-size:12px; color:#d93025; background:#fce8e6; padding:8px; border-radius:4px;">Không thể tạo Backup tự động do thiếu quyền truy cập Drive hoặc lỗi: ${error.message}</div>`;
+      finalMsg += `${detailMsg}`;
+      
+      showStatusDialog(finalMsg, false, 280);
+    }
+    
+  } else {
+    let finalMsg = `<b style="font-size:14px;">Phát hiện sai lệch! Vui lòng kiểm tra các ô màu vàng.</b><br/>${detailMsg}`;
+    showStatusDialog(finalMsg, true, 240); 
+  }
+}
+
+/**
+ * Gán hàm này cho nút "パラメ発行"
+ */
+function generateParams() {
+  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  const ui = SpreadsheetApp.getUi();
+  
+  const loadingHtml = HtmlService.createHtmlOutput(
+    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+    '  <h3 style="margin: 0 0 10px 0; color: #673ab7;">⚙️ Đang tạo Parameter...</h3>' +
+    '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang gửi dữ liệu qua Sheet tự động và chờ công thức xử lý. Quá trình này mất vài giây...</p>' +
+    '</div>'
+  ).setWidth(350).setHeight(150);
+  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+
+  const mainSheet = ss.getSheetByName("データ");
+  const lastRowMain = mainSheet.getLastRow();
+  if (lastRowMain < 12) {
+    showStatusDialog("Không có dữ liệu ở bảng chính.", true);
+    return;
+  }
+  
+  const dataRange = mainSheet.getRange(12, 3, lastRowMain - 11, 3).getValues(); 
+  let extUrl = "";
+  for (let i = 0; i < dataRange.length; i++) {
+    if (String(dataRange[i][0]).replace(/\s+/g, '') === "AD") {
+      extUrl = String(dataRange[i][2]).trim(); 
+      break;
+    }
+  }
+  
+  if (!extUrl || extUrl === "未設定" || !extUrl.includes("http")) {
+    showStatusDialog("Lỗi: Không tìm thấy link hợp lệ ở cột 自動発行 cho dòng AD.", true);
+    return;
+  }
+
+  const adSheet = ss.getSheetByName("AD");
+  if (!adSheet) {
+    showStatusDialog("Lỗi: Không tìm thấy Sheet AD ở file hiện tại.", true);
+    return;
+  }
+  
+  const adData = adSheet.getDataRange().getDisplayValues();
+  if (adData.length < 2) {
+    showStatusDialog("Lỗi: Sheet AD không có dữ liệu.", true);
+    return;
+  }
+  
+  const adHeaders = adData[0].map(h => String(h).trim().toLowerCase().replace(/[\u200B-\u200D\uFEFF\n\s]/g, ''));
+  let idxCp = adHeaders.indexOf("campaign_name"); if(idxCp === -1) idxCp = adHeaders.findIndex(h => h.includes("campaign"));
+  let idxAdg = adHeaders.indexOf("adgroup_name"); if(idxAdg === -1) idxAdg = adHeaders.findIndex(h => h.includes("adgroup") || h.includes("ad_group"));
+  let idxAd = adHeaders.indexOf("ad_name"); if(idxAd === -1) idxAd = adHeaders.findIndex(h => h.includes("adname") || h === "title");
+  let idxNyukoAd = adHeaders.indexOf("入稿用_ad_name");
+  let idxTitle = adHeaders.indexOf("title");
+  let idxCopy = adHeaders.indexOf("copy");
+  let idxLink = adHeaders.indexOf("link");
+  
+  if (idxCp === -1 || idxAdg === -1 || idxAd === -1) {
+    showStatusDialog("Lỗi: Sheet AD thiếu các cột cơ bản (campaign_name, adgroup_name, ad_name).", true);
+    return;
+  }
+
+  let validAdData = [];
+  for (let i = 1; i < adData.length; i++) {
+    let cpVal = adData[i][idxCp] || "";
+    if (cpVal === "" || cpVal.toLowerCase().includes("required") || cpVal.includes("必須")) continue;
+    
+    let finalAdNameVal = "";
+    if (idxNyukoAd !== -1 && String(adData[i][idxNyukoAd]).trim() !== "") {
+        finalAdNameVal = String(adData[i][idxNyukoAd]).trim();
+    } else {
+        finalAdNameVal = adData[i][idxAd] || "";
+    }
+
+    validAdData.push({
+      localRow: i + 1, 
+      campaign: cpVal,
+      adgroup: adData[i][idxAdg] || "",
+      ad: finalAdNameVal,
+      title: idxTitle !== -1 ? adData[i][idxTitle] : "",
+      copy: idxCopy !== -1 ? adData[i][idxCopy] : "",
+      link: idxLink !== -1 ? adData[i][idxLink] : ""
+    });
+  }
+
+  if (validAdData.length === 0) {
+    showStatusDialog("Không có dữ liệu hợp lệ trong Sheet AD để thao tác.", true);
+    return;
+  }
+
+  try {
+    const extSs = SpreadsheetApp.openByUrl(extUrl);
+    let extSheet = extSs.getSheetByName("発行") || extSs.getSheets()[0];
+    
+    const extHeaders = extSheet.getRange(1, 1, 1, extSheet.getLastColumn()).getDisplayValues()[0].map(h => String(h).trim().replace(/[\n\s]/g, ''));
+    
+    const colDate = extHeaders.indexOf("更新日");
+    const colUpdater = extHeaders.indexOf("更新者");
+    const colCp = extHeaders.indexOf("キャンペーン名");
+    const colAdg = extHeaders.indexOf("広告グループ名");
+    const colAd = extHeaders.indexOf("広告名");
+    const colTitle = extHeaders.indexOf("タイトル");
+    const colCopy = extHeaders.indexOf("説明文");
+    const colLink = extHeaders.indexOf("遷移先");
+    const colParamReturn = extHeaders.indexOf("入稿用パラメ"); 
+    
+    if (colDate === -1 || colCp === -1 || colParamReturn === -1) {
+      showStatusDialog("Lỗi: Sheet 自動発行 bên ngoài không đúng cấu trúc (thiếu cột 更新日, キャンペーン名 hoặc 入稿用パラメ).", true);
+      return;
+    }
+
+    const checkCpColData = extSheet.getRange(1, colCp + 1, extSheet.getMaxRows(), 1).getValues();
+    let extStartRow = 1;
+    for (let i = checkCpColData.length - 1; i >= 0; i--) {
+      if (String(checkCpColData[i][0]).trim() !== "") {
+        extStartRow = i + 2; 
+        break;
+      }
+    }
+
+    let numColsToPaste = extSheet.getLastColumn();
+    let pasteData = [];
+    let todayStr = Utilities.formatDate(new Date(), ss.getSpreadsheetTimeZone(), "yyyy/MM/dd HH:mm:ss");
+
+    validAdData.forEach(item => {
+      let rowArr = new Array(numColsToPaste).fill("");
+      if (colDate !== -1) rowArr[colDate] = todayStr;
+      if (colUpdater !== -1) rowArr[colUpdater] = "自動";
+      if (colCp !== -1) rowArr[colCp] = item.campaign;
+      if (colAdg !== -1) rowArr[colAdg] = item.adgroup;
+      if (colAd !== -1) rowArr[colAd] = item.ad;
+      if (colTitle !== -1) rowArr[colTitle] = item.title;
+      if (colCopy !== -1) rowArr[colCopy] = item.copy;
+      if (colLink !== -1) rowArr[colLink] = item.link;
+      pasteData.push(rowArr);
+    });
+
+    extSheet.getRange(extStartRow, 1, pasteData.length, numColsToPaste).setValues(pasteData);
+    
+    SpreadsheetApp.flush();
+    Utilities.sleep(5000);
+    
+    const resultParams = extSheet.getRange(extStartRow, colParamReturn + 1, pasteData.length, 1).getDisplayValues();
+    
+    let targetColIdx = adHeaders.indexOf("landing page parameters");
+    if (targetColIdx === -1) {
+      targetColIdx = adHeaders.length; 
+      if (targetColIdx + 1 > adSheet.getMaxColumns()) {
+          adSheet.insertColumnAfter(adSheet.getMaxColumns());
+      }
+      adSheet.getRange(1, targetColIdx + 1).setValue("landing page parameters").setFontWeight("bold").setBackground("#d9ead3");
+    }
+    
+    let numDataRows = adData.length - 1; 
+    let currentParamsCol = adSheet.getRange(2, targetColIdx + 1, numDataRows, 1).getValues();
+    
+    let hasNA = false; 
+
+    for (let i = 0; i < validAdData.length; i++) {
+      let arrIdx = validAdData[i].localRow - 2; 
+      let paramVal = resultParams[i][0];
+      currentParamsCol[arrIdx][0] = paramVal;
+      
+      if (String(paramVal).toUpperCase().includes("N/A")) {
+          hasNA = true;
+      }
+    }
+    
+    adSheet.getRange(2, targetColIdx + 1, numDataRows, 1).setValues(currentParamsCol);
+    
+    if (hasNA) {
+        showStatusDialog("⚠️ Phát hiện CPN/ADG mới, hãy cập nhật để tiếp tục", true, 200);
+    } else {
+        showStatusDialog(`Thành công! Đã phát hành và cập nhật Parameter cho ${validAdData.length} dòng.`, false, 200);
+    }
+
+  } catch (error) {
+    showStatusDialog("Lỗi hệ thống: " + error.message, true, 200);
+  }
+}
