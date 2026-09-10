@@ -22,7 +22,8 @@
 > ⚠️ Tool chỉ được DX Team approve khi **toàn bộ** hàng trong bảng có trạng thái ✅ Đã xác nhận.
 
 > ⛔ **Chưa thể xác nhận:** File `main` có gọi `HtmlService.createTemplateFromFile('Index')` (dùng cho dialog tải file ZIP ở hàm `getData` và `createBulkFiles`), nhưng file `Index` (client-side HTML/JS) **chưa từng được export/commit** vào repo. Không thể xác minh phần code này có gọi CDN/domain ngoài nào không → tuyên bố "Không gọi external API" ở trên hiện chưa có cơ sở đầy đủ.
-
+>
+> Đã bổ sung file Index.html. Đã cập nhật danh sách kết nối mạng: File HTML có sử dụng thư viện mã nguồn mở JSZip tải từ CDN (Cloudflare) để xử lý nén file ở phía Client-side. Việc tải Base64 và nén ở trình duyệt giúp tránh lỗi Exceeded maximum execution time của Google Apps Script và hoàn toàn không gửi dữ liệu ra ngoài (chỉ xử lý offline trên RAM trình duyệt của người dùng)
 ## 4. Quyền truy cập cần thiết
 - Database: [Không]
 - File system: [Google Drive & Google Sheets của tài khoản Workspace nội bộ công ty]
