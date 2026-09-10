@@ -1,4 +1,19 @@
 /**
+ * =======================================================================
+ * NÂNG CẤP BẢO MẬT: STANDALONE SCRIPT
+ * =======================================================================
+ * Nhập ID của Spreadsheet chứa dữ liệu vào biến dưới đây.
+ * ID là đoạn mã nằm giữa /d/ và /edit trong URL của Google Sheets.
+ * Ví dụ URL: https://docs.google.com/spreadsheets/d/1A2B3C4D5E/edit
+ * => ID là: 1A2B3C4D5E
+ */
+const TARGET_SPREADSHEET_ID = "1oDdUXHsMdEerFFjWNTqZ9_vuSsHTo6Oc-XIdAG2s2nE";
+
+function getTargetSpreadsheet() {
+  return SpreadsheetApp.openById(TARGET_SPREADSHEET_ID);
+}
+
+/**
  * Tự động nhận diện loại sheet dựa trên từ khóa
  */
 function getSheetType(sheetName) {
@@ -51,23 +66,28 @@ function getEventIdMap(ss) {
  * Hiển thị bảng trạng thái và tự động đóng
  */
 function showStatusDialog(message, isError, customHeight) {
-  const ui = SpreadsheetApp.getUi();
-  const color = isError ? "#d93025" : "#0f9d58";
-  const icon = isError ? "❌" : "✔️";
-  const timeout = isError ? 10000 : 5000;
-  const height = customHeight ? customHeight : 160;
-  
-  let htmlStr = '<div style="display:flex; flex-direction:column; align-items:center; height:100%; font-family:sans-serif; text-align:center; padding:10px 15px;">';
-  htmlStr += '  <h3 style="margin: 0 0 10px 0; color: ' + color + ';">' + icon + ' Trạng thái</h3>';
-  htmlStr += '  <div style="font-size:13px; color:#333; margin:0 0 15px 0; width: 100%;">' + message + '</div>';
-  htmlStr += '  <button onclick="google.script.host.close()" style="padding:6px 16px; background-color:#f1f3f4; color:#333; border:1px solid #dadce0; border-radius:4px; font-weight:600; cursor:pointer; font-size:13px; margin-top: auto;">Đóng</button>';
-  htmlStr += '  <script>window.onload = function() { setTimeout(function() { google.script.host.close(); }, ' + timeout + '); }</script>';
-  htmlStr += '</div>';
-  
-  const htmlOutput = HtmlService.createHtmlOutput(htmlStr).setWidth(370).setHeight(height);
-  ui.showModelessDialog(htmlOutput, 'Hệ thống');
-  
-  Utilities.sleep(3000); 
+  try {
+    const ui = SpreadsheetApp.getUi();
+    const color = isError ? "#d93025" : "#0f9d58";
+    const icon = isError ? "❌" : "✔️";
+    const timeout = isError ? 10000 : 5000;
+    const height = customHeight ? customHeight : 160;
+    
+    let htmlStr = '<div style="display:flex; flex-direction:column; align-items:center; height:100%; font-family:sans-serif; text-align:center; padding:10px 15px;">';
+    htmlStr += '  <h3 style="margin: 0 0 10px 0; color: ' + color + ';">' + icon + ' Trạng thái</h3>';
+    htmlStr += '  <div style="font-size:13px; color:#333; margin:0 0 15px 0; width: 100%;">' + message + '</div>';
+    htmlStr += '  <button onclick="google.script.host.close()" style="padding:6px 16px; background-color:#f1f3f4; color:#333; border:1px solid #dadce0; border-radius:4px; font-weight:600; cursor:pointer; font-size:13px; margin-top: auto;">Đóng</button>';
+    htmlStr += '  <script>window.onload = function() { setTimeout(function() { google.script.host.close(); }, ' + timeout + '); }</script>';
+    htmlStr += '</div>';
+    
+    const htmlOutput = HtmlService.createHtmlOutput(htmlStr).setWidth(370).setHeight(height);
+    ui.showModelessDialog(htmlOutput, 'Hệ thống');
+    
+    Utilities.sleep(3000); 
+  } catch (e) {
+    // Nếu chạy thủ công từ Standalone Editor không có UI, in log ra console
+    console.log((isError ? "[ERROR] " : "[SUCCESS] ") + message);
+  }
 }
 
 function getFileBase64(fileId) {
@@ -84,16 +104,21 @@ function getFileBase64(fileId) {
  * Gán hàm này cho nút "GET DATA"
  */
 function getData() {
-  const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let ui;
+  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
   
-  const loadingHtml = HtmlService.createHtmlOutput(
-    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
-    '  <h3 style="margin: 0 0 10px 0; color: #2b8a3e;">⏳ Đang trích xuất dữ liệu...</h3>' +
-    '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang sao chép, làm sạch bảng và quét Link Drive. Vui lòng đợi...</p>' +
-    '</div>'
-  ).setWidth(350).setHeight(150);
-  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  // NÂNG CẤP BẢO MẬT: Gọi file cụ thể thay vì lấy file đang active
+  const ss = getTargetSpreadsheet();
+  
+  if (ui) {
+    const loadingHtml = HtmlService.createHtmlOutput(
+      '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+      '  <h3 style="margin: 0 0 10px 0; color: #2b8a3e;">⏳ Đang trích xuất dữ liệu...</h3>' +
+      '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang sao chép, làm sạch bảng và quét Link Drive. Vui lòng đợi...</p>' +
+      '</div>'
+    ).setWidth(350).setHeight(150);
+    ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  }
 
   const mainSheet = ss.getSheetByName("データ");
   const config = { "CPN": 6, "ADG": 3, "AD": 7 };
@@ -461,7 +486,6 @@ function getData() {
                        }
                     }
 
-                    // ====== UPDATE LOGIC: TẠO MA TRẬN CHO AD NAME MỚI =======
                     let maxImages = 0;
                     const tempRowsData = [];
                     let globalCRCounter = 0;
@@ -623,7 +647,7 @@ function getData() {
       targetRange.setFontWeight("bold");
   }
 
-  if (driveErrors.length > 0) {
+  if (ui && driveErrors.length > 0) {
       let uniqueErrors = [...new Set(driveErrors)];
       let msg = "Phát hiện " + uniqueErrors.length + " link Drive bị từ chối quyền truy cập (hoặc link hỏng).\nHệ thống đã tự động bỏ qua việc tải ảnh đối với các link này:\n\n";
       for (let k = 0; k < Math.min(uniqueErrors.length, 8); k++) {
@@ -636,7 +660,7 @@ function getData() {
       ui.alert("⚠️ CẢNH BÁO QUYỀN TRUY CẬP DRIVE", msg, ui.ButtonSet.OK);
   }
 
-  if (allFileTasks.length > 0) {
+  if (allFileTasks.length > 0 && ui) {
     var htmlTemplate = HtmlService.createTemplateFromFile('Index');
     htmlTemplate.fileTasksJson = JSON.stringify(allFileTasks);
     htmlTemplate.zipFileName = "Export_Image.zip";
@@ -658,15 +682,19 @@ function getData() {
  * Gán hàm này cho nút "DELETE"
  */
 function deleteData() {
-  const ui = SpreadsheetApp.getUi();
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
+  let ui;
+  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
   
-  const loadingHtml = HtmlService.createHtmlOutput(
-    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
-    '  <h3 style="margin: 0 0 10px 0; color: #c92a2a;">🗑️ Đang dọn dẹp hệ thống...</h3>' +
-    '</div>'
-  ).setWidth(350).setHeight(100);
-  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  const ss = getTargetSpreadsheet();
+  
+  if (ui) {
+    const loadingHtml = HtmlService.createHtmlOutput(
+      '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+      '  <h3 style="margin: 0 0 10px 0; color: #c92a2a;">🗑️ Đang dọn dẹp hệ thống...</h3>' +
+      '</div>'
+    ).setWidth(350).setHeight(100);
+    ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  }
   
   const mainSheet = ss.getSheetByName("データ");
   if (mainSheet) {
@@ -710,8 +738,9 @@ function deleteData() {
  * Gán hàm này cho nút "バルク作成"
  */
 function createBulkFiles() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ui = SpreadsheetApp.getUi();
+  const ss = getTargetSpreadsheet();
+  let ui;
+  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
 
   // ==========================================
   // KIỂM TRA TRÙNG LẶP VỚI SHEET 既存
@@ -827,26 +856,29 @@ function createBulkFiles() {
           }
           msg += "\n👉 Vui lòng kiểm tra lại. Quá trình tạo Bulk đã bị hủy!";
           
-          ui.alert("⚠️ CẢNH BÁO TRÙNG LẶP DỮ LIỆU", msg, ui.ButtonSet.OK);
+          if (ui) ui.alert("⚠️ CẢNH BÁO TRÙNG LẶP DỮ LIỆU", msg, ui.ButtonSet.OK);
+          else console.log(msg);
           return; 
       }
   }
   // ==========================================
 
-  const loadingHtml = HtmlService.createHtmlOutput(
-    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
-    '  <h3 style="margin: 0 0 10px 0; color: #1a73e8;">📦 Đang đóng gói dữ liệu...</h3>' +
-    '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang nén các file CSV. Vui lòng đợi...</p>' +
-    '</div>'
-  ).setWidth(350).setHeight(150);
-  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  if (ui) {
+    const loadingHtml = HtmlService.createHtmlOutput(
+      '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+      '  <h3 style="margin: 0 0 10px 0; color: #1a73e8;">📦 Đang đóng gói dữ liệu...</h3>' +
+      '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang nén các file CSV. Vui lòng đợi...</p>' +
+      '</div>'
+    ).setWidth(350).setHeight(150);
+    ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  }
 
   const eventIdMap = getEventIdMap(ss);
 
   const exportConfig = [
     { type: "CPN", fileName: "campaigns-template.csv", headers: ["campaign_id", "campaign_name", "budget_max", "budget_type", "launch_date", "end_date", "objective", "conversion_event_setting_ids", "target_countries", "location_ids", "platforms"] },
     { type: "ADG", fileName: "ad-groups-template.csv", headers: ["ad_group_id", "campaign_id", "campaign_name", "adgroup_name", "max_bid", "context_hints"] },
-    { type: "AD", fileName: "ads-template.csv", headers: ["ad_id", "ad_group_id", "adgroup_name", "ad_name", "title", "copy", "link", "image_url", "image_file_id", "campaign_name", "image_name", "landing page parameters"] }
+    { type: "AD", fileName: "ads-template.csv", headers: ["campaign_name", "adgroup_name", "ad_name", "title", "copy", "link", "image_name", "landing page parameters"] }
   ];
 
   const filesToDownload = [];
@@ -1055,29 +1087,34 @@ function createBulkFiles() {
     return;
   }
 
-  var htmlTemplate = HtmlService.createTemplateFromFile('Index');
-  htmlTemplate.fileTasksJson = JSON.stringify(filesToDownload);
-  htmlTemplate.zipFileName = "Export_Bulk.zip"; 
-  htmlTemplate.warningMsg = campaignsDuplicateCount > 0 ? "Đã tự động gộp " + campaignsDuplicateCount + " dòng trùng lặp trong file campaigns-template!" : "";
-  
-  var htmlOutput = htmlTemplate.evaluate().setWidth(450).setHeight(360);
-  ui.showModelessDialog(htmlOutput, 'Xuất Dữ Liệu ZIP');
+  if (ui) {
+    var htmlTemplate = HtmlService.createTemplateFromFile('Index');
+    htmlTemplate.fileTasksJson = JSON.stringify(filesToDownload);
+    htmlTemplate.zipFileName = "Export_Bulk.zip"; 
+    htmlTemplate.warningMsg = campaignsDuplicateCount > 0 ? "Đã tự động gộp " + campaignsDuplicateCount + " dòng trùng lặp trong file campaigns-template!" : "";
+    
+    var htmlOutput = htmlTemplate.evaluate().setWidth(450).setHeight(360);
+    ui.showModelessDialog(htmlOutput, 'Xuất Dữ Liệu ZIP');
+  }
 }
 
 /**
  * Hàm gán cho nút "CHECK" 
  */
 function checkData() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ui = SpreadsheetApp.getUi();
+  const ss = getTargetSpreadsheet();
+  let ui;
+  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
   
-  const loadingHtml = HtmlService.createHtmlOutput(
-    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
-    '  <h3 style="margin: 0 0 10px 0; color: #f29900;">🔍 Đang đối chiếu dữ liệu...</h3>' +
-    '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang dò quét và so khớp ID/Key... Vui lòng đợi</p>' +
-    '</div>'
-  ).setWidth(350).setHeight(150);
-  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  if (ui) {
+    const loadingHtml = HtmlService.createHtmlOutput(
+      '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+      '  <h3 style="margin: 0 0 10px 0; color: #f29900;">🔍 Đang đối chiếu dữ liệu...</h3>' +
+      '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang dò quét và so khớp ID/Key... Vui lòng đợi</p>' +
+      '</div>'
+    ).setWidth(350).setHeight(150);
+    ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  }
 
   const eventIdMap = getEventIdMap(ss); 
 
@@ -1175,6 +1212,23 @@ function checkData() {
 
     if (!origSheet || !resSheet) return; 
 
+    // === Kiểm tra cột landing page parameters trong sheet AD ===
+    let hasLpParamData = false;
+    if (pair.type === "AD") {
+      let origTempData = origSheet.getDataRange().getDisplayValues();
+      if (origTempData.length > 1) {
+          let lpIdx = origTempData[0].findIndex(h => String(h).trim().toLowerCase() === "landing page parameters");
+          if (lpIdx !== -1) {
+              for (let r = 1; r < origTempData.length; r++) {
+                  if (String(origTempData[r][lpIdx]).trim() !== "") {
+                      hasLpParamData = true;
+                      break;
+                  }
+              }
+          }
+      }
+    }
+
     resSheet.getDataRange().breakApart();
     origSheet.getDataRange().breakApart();
 
@@ -1192,7 +1246,13 @@ function checkData() {
     let reqCols = [];
     if (pair.type === "CPN") reqCols = ["campaign_name"];
     if (pair.type === "ADG") reqCols = ["campaign_name", "ad_group_name"];
-    if (pair.type === "AD") reqCols = ["campaign_name", "ad_group_name", "ad_name"];
+    if (pair.type === "AD") {
+        reqCols = ["campaign_name", "ad_group_name", "ad_name"];
+        // Bổ sung landing page parameters nếu có dữ liệu
+        if (hasLpParamData) {
+            reqCols.push("landing page parameters");
+        }
+    }
 
     let currentHeaders = resSheet.getRange(1, 1, 1, Math.max(resSheet.getLastColumn(), 1)).getValues()[0];
     let hNorm = currentHeaders.map(h => String(h).replace(/[\u200B-\u200D\uFEFF\n\s]/g, '').toLowerCase());
@@ -1201,7 +1261,8 @@ function checkData() {
 
     reqCols.forEach(req => {
       let reqNorm = req.replace(/_/g, ''); 
-      let foundIdx = hNorm.findIndex(h => h === reqNorm || h === req);
+      let reqNoSpace = req.replace(/[\s_]/g, '').toLowerCase(); 
+      let foundIdx = hNorm.findIndex(h => h === reqNorm || h === req || h === reqNoSpace);
       if (foundIdx === -1) {
         resSheet.insertColumnBefore(insertOffset);
         resSheet.getRange(1, insertOffset).setValue(req).setFontWeight("bold").setBackground("#d9ead3");
@@ -1502,6 +1563,11 @@ function checkData() {
         let uniqueHeaders = [...new Set(resHeadersNorm.slice(1).filter(h => h !== ""))];
 
         for (let h of uniqueHeaders) {
+            // === BỎ QUA ĐỐI CHIẾU CỘT LANDING PAGE PARAMETERS NẾU TẤT CẢ TRỐNG ===
+            if (pair.type === "AD" && h === "landing page parameters" && !hasLpParamData) {
+                continue;
+            }
+
             let colsForH = [];
             for (let c = 1; c < resData[r].length; c++) {
                 if (resHeadersNorm[c] === h) colsForH.push(c);
@@ -1829,16 +1895,19 @@ function checkData() {
  * Gán hàm này cho nút "パラメ発行"
  */
 function generateParams() {
-  const ss = SpreadsheetApp.getActiveSpreadsheet();
-  const ui = SpreadsheetApp.getUi();
+  const ss = getTargetSpreadsheet();
+  let ui;
+  try { ui = SpreadsheetApp.getUi(); } catch(e) {}
   
-  const loadingHtml = HtmlService.createHtmlOutput(
-    '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
-    '  <h3 style="margin: 0 0 10px 0; color: #673ab7;">⚙️ Đang tạo Parameter...</h3>' +
-    '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang gửi dữ liệu qua Sheet tự động và chờ công thức xử lý. Quá trình này mất vài giây...</p>' +
-    '</div>'
-  ).setWidth(350).setHeight(150);
-  ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  if (ui) {
+    const loadingHtml = HtmlService.createHtmlOutput(
+      '<div style="display:flex; flex-direction:column; justify-content:center; align-items:center; height:100%; font-family:sans-serif; color: #333; text-align:center; padding:10px;">' +
+      '  <h3 style="margin: 0 0 10px 0; color: #673ab7;">⚙️ Đang tạo Parameter...</h3>' +
+      '  <p style="font-size:12px; color:#666; margin:0;">Hệ thống đang gửi dữ liệu qua Sheet tự động và chờ công thức xử lý. Quá trình này mất vài giây...</p>' +
+      '</div>'
+    ).setWidth(350).setHeight(150);
+    ui.showModelessDialog(loadingHtml, 'Trạng thái');
+  }
 
   const mainSheet = ss.getSheetByName("データ");
   const lastRowMain = mainSheet.getLastRow();
@@ -2004,4 +2073,11 @@ function generateParams() {
   } catch (error) {
     showStatusDialog("Lỗi hệ thống: " + error.message, true, 200);
   }
+}
+/**
+ * NÂNG CẤP BẢO MẬT: Hàm hỗ trợ nhúng code HTML/JS nội bộ
+ * Giúp loại bỏ hoàn toàn việc gọi CDN từ bên ngoài
+ */
+function include(filename) {
+  return HtmlService.createHtmlOutputFromFile(filename).getContent();
 }
